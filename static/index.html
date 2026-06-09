@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Expense Tracker</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --navy:#050510; --surface:#0d0d1a; --surface2:#14142a; --surface3:#1a1a35;
+    --border:#1e1e3a; --text:#e2e8f0; --muted:#94a3b8; --dim:#64748b;
+    --blue:#3B82F6; --blue-bright:#60A5FA; --cyan:#06B6D4; --cyan-bright:#22D3EE;
+    --purple:#8B5CF6; --danger:#ef5b6b; --good:#22d3ee;
+    --grad:linear-gradient(135deg,#60a5fa 0%,#06b6d4 50%,#8b5cf6 100%);
+  }
+  * { box-sizing: border-box; }
+  html { scrollbar-width: thin; scrollbar-color:#1e1e3a #050510; }
+  ::-webkit-scrollbar { width:6px; height:6px; }
+  ::-webkit-scrollbar-track { background:var(--navy); }
+  ::-webkit-scrollbar-thumb { background:var(--border); border-radius:10px; }
+  ::-webkit-scrollbar-thumb:hover { background:var(--blue); }
+  ::selection { background:rgba(59,130,246,.35); color:#f8fafc; }
+  body { margin:0; font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;
+         background:var(--navy); color:var(--text); overflow-x:hidden;
+         background-image:
+           radial-gradient(ellipse 80% 50% at 20% -10%, rgba(59,130,246,.10), transparent 60%),
+           radial-gradient(ellipse 70% 50% at 90% 10%, rgba(139,92,246,.08), transparent 55%);
+         background-attachment:fixed; }
+  h1,h2,h3 { font-family:'Exo 2',sans-serif; }
+  .mono { font-family:'Roboto Mono',monospace; }
+
+  /* Header */
+  header { display:flex; align-items:center; gap:14px; padding:18px 28px;
+           border-bottom:1px solid var(--border); flex-wrap:wrap;
+           background:rgba(13,13,26,.6); backdrop-filter:blur(12px);
+           position:sticky; top:0; z-index:50; }
+  h1 { font-size:19px; margin:0; font-weight:800; letter-spacing:-.01em; display:flex; align-items:center; gap:10px; }
+  .logo-dot { width:30px; height:30px; border-radius:9px; background:var(--grad);
+              display:inline-flex; align-items:center; justify-content:center; font-size:15px;
+              box-shadow:0 0 20px rgba(59,130,246,.45); }
+  .gradient-text { background:var(--grad); -webkit-background-clip:text; background-clip:text;
+                   -webkit-text-fill-color:transparent; }
+  .spacer { flex:1; }
+
+  /* Controls */
+  input, select, button { font-family:inherit; color:var(--text); border:1px solid var(--border);
+    background:var(--surface2); border-radius:10px; padding:9px 13px; font-size:13.5px; transition:all .2s; }
+  input:focus, select:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(59,130,246,.15); }
+  select option { background:var(--surface2); }
+  button { cursor:pointer; }
+  button.primary { background:var(--grad); border:none; color:#fff; font-weight:700;
+    box-shadow:0 4px 18px rgba(59,130,246,.35); }
+  button.primary:hover { filter:brightness(1.08); transform:translateY(-1px);
+    box-shadow:0 6px 24px rgba(59,130,246,.45); }
+  button.primary:disabled { opacity:.6; cursor:default; transform:none; }
+  button.ghost { background:var(--surface2); color:var(--muted); }
+  button.ghost:hover { border-color:var(--blue); color:var(--text); }
+
+  main { padding:28px; max-width:1240px; margin:0 auto; }
+  .grid { display:grid; gap:18px; }
+  .cards { grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); margin-bottom:22px; }
+
+  /* Cards with gradient border */
+  .card, .chart-box {
+    position:relative; background:rgba(13,13,26,.55); backdrop-filter:blur(8px);
+    border:1px solid var(--border); border-radius:18px;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.04);
+  }
+  .card::before, .chart-box::before {
+    content:''; position:absolute; inset:0; border-radius:inherit; padding:1px;
+    background:linear-gradient(135deg, rgba(59,130,246,.45), rgba(6,182,212,.25), rgba(139,92,246,.18));
+    -webkit-mask:linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite:xor; mask-composite:exclude; pointer-events:none; opacity:.7;
+  }
+  .card { padding:18px 20px; transition:transform .25s, box-shadow .25s; }
+  .card:hover { transform:translateY(-2px); box-shadow:0 16px 50px rgba(59,130,246,.12); }
+  .card .label { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.08em; font-weight:600; }
+  .card .value { font-family:'Exo 2',sans-serif; font-size:26px; font-weight:800; margin-top:8px; letter-spacing:-.01em; }
+  .card .sub { color:var(--dim); font-size:12px; margin-top:5px; }
+  .card.hero .value { background:var(--grad); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+
+  .charts { grid-template-columns:1fr 1fr; margin-bottom:22px; }
+  .chart-box { padding:20px 22px; margin-bottom:0; }
+  .chart-box h3 { margin:0 0 16px; font-size:15px; font-weight:700; color:var(--text);
+    display:flex; align-items:center; justify-content:space-between; gap:8px; }
+
+  /* Table */
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th, td { text-align:left; padding:11px 14px; border-bottom:1px solid var(--border); }
+  th { color:var(--dim); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
+  tbody tr { transition:background .15s; }
+  tbody tr:hover { background:rgba(59,130,246,.05); }
+
+  .tag { font-size:10.5px; padding:3px 9px; border-radius:20px; background:var(--surface3);
+         color:var(--muted); font-weight:500; }
+  .tag.excluded { background:rgba(239,91,107,.14); color:#f7a3ad; }
+  .tag.refund { background:rgba(34,211,238,.14); color:#7fe9f5; }
+  .tag.big { background:rgba(245,158,91,.16); color:#f5b06b; font-weight:600; }
+  tr.bigrow { background:rgba(245,158,91,.06); }
+  tr.bigrow:hover { background:rgba(245,158,91,.11); }
+  .amount { font-family:'Roboto Mono',monospace; font-weight:500; }
+  .amount.debit { color:var(--text); }
+  .amount.credit { color:var(--cyan-bright); }
+  .over { color:var(--danger); font-weight:700; }
+  .muted { color:var(--muted); }
+
+  .bar { flex:1; height:9px; background:var(--surface3); border-radius:6px; overflow:hidden; }
+  .bar > div { height:100%; background:var(--grad); border-radius:6px; transition:width .4s; }
+  .bar > div.over { background:linear-gradient(135deg,#ef5b6b,#f59e5b); }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .section-title { font-family:'Exo 2',sans-serif; font-size:18px; font-weight:700; margin:28px 0 14px; }
+  select.cat-edit, select.type-edit { padding:5px 8px; font-size:12px; border-radius:8px; }
+
+  .notice { position:relative; background:rgba(20,20,42,.5); border:1px solid var(--border);
+    border-radius:14px; padding:13px 18px; font-size:13px; color:var(--muted); margin-bottom:22px; }
+  .notice b { color:var(--text); }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="logo-dot">💸</span> <span>Expense<span class="gradient-text"> Tracker</span></span></h1>
+  <select id="monthPick" title="Months with data"></select>
+  <span id="rangeControls" style="display:none;align-items:center;gap:8px;">
+    <input type="month" id="fromMonth" title="From month">
+    <span class="muted" style="font-size:13px;">→</span>
+    <input type="month" id="toMonth" title="To month">
+  </span>
+  <button class="ghost" id="rangeToggle" title="Toggle single month / date range" style="font-size:12px;">📅 Range</button>
+  <input type="month" id="month" style="display:none">
+  <button class="primary" id="syncBtn">⟳ Sync now</button>
+  <select id="syncDays" title="How far back to sync">
+    <option value="30">Last 30 days</option>
+    <option value="90" selected>Last 90 days</option>
+    <option value="180">Last 180 days</option>
+    <option value="365">Last 1 year</option>
+  </select>
+  <span class="spacer"></span>
+  <span id="aiCost" class="tag" title="Total AI spend (Sonnet) since you started"></span>
+  <span id="status" class="muted"></span>
+</header>
+
+<div id="progressWrap" style="display:none; padding:0 24px 14px;">
+  <div class="row" style="align-items:center;gap:10px;">
+    <div class="bar" style="height:10px;flex:1;"><div id="progressBar" style="width:0%;transition:width .3s;"></div></div>
+    <button class="ghost" id="stopBtn" style="font-size:12px;display:none;">■ Stop</button>
+  </div>
+  <div id="progressText" class="muted" style="font-size:12px;margin-top:6px;"></div>
+  <div id="progressFeed" style="margin-top:8px;max-height:220px;overflow:auto;font-size:13px;"></div>
+</div>
+
+<main>
+  <div class="notice">
+    <span style="background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;font-weight:700;">●</span>
+    Spend counts <b>purchases − refunds</b> only. Card-bill payments &amp; transfers are
+    detected and <b>excluded</b> so a bill paid from savings never double-counts.
+  </div>
+
+  <div class="grid cards" id="accountCards"></div>
+
+  <div class="grid charts">
+    <div class="chart-box"><h3>Where your money went (by category)
+      <button class="ghost" id="catAiBtn" style="float:right;font-size:12px;">✨ Categorize with AI</button></h3>
+      <canvas id="catChart" height="240"></canvas></div>
+    <div class="chart-box"><h3>Spend by card / account</h3>
+      <canvas id="acctChart" height="240"></canvas></div>
+  </div>
+  <div class="chart-box" style="margin-bottom:20px;">
+    <h3>Monthly trend</h3><canvas id="trendChart" height="90"></canvas>
+  </div>
+
+  <div class="chart-box" id="unparsedBox" style="margin-bottom:20px; display:none;">
+    <h3>⚠️ Unparsed emails <span id="unparsedCount" class="tag"></span>
+      <span style="float:right;">
+        <button class="ghost" id="retryAllBtn" style="font-size:12px;">✨ Extract all with AI</button>
+        <button class="ghost" id="toggleUnparsed" style="font-size:12px;">show</button>
+      </span></h3>
+    <div id="unparsedList" style="display:none;"></div>
+    <div class="muted" style="font-size:12px;">These alerts couldn't be parsed by the built-in rules.
+      Most are usually promos/OTPs (ignore them). Use AI only on ones that look like real transactions.</div>
+  </div>
+
+  <div class="section-title">Transactions</div>
+  <div class="chart-box">
+    <div class="row" id="txnFilters" style="margin-bottom:16px;gap:8px;">
+      <input id="fSearch" placeholder="🔍 Search merchant…" style="flex:1;min-width:160px;">
+      <select id="fAccount"><option value="">All accounts</option></select>
+      <select id="fCategory"><option value="">All categories</option></select>
+      <select id="fType">
+        <option value="">All types</option>
+        <option value="purchase">purchase</option>
+        <option value="refund">refund</option>
+        <option value="card_payment">card_payment</option>
+        <option value="transfer">transfer</option>
+      </select>
+      <input id="fMin" type="number" placeholder="min ₹" style="width:90px;">
+      <input id="fMax" type="number" placeholder="max ₹" style="width:90px;">
+      <input id="fFrom" type="date" title="From date" style="width:140px;">
+      <input id="fTo" type="date" title="To date" style="width:140px;">
+      <label class="muted" style="font-size:12px;display:flex;align-items:center;gap:5px;cursor:pointer;">
+        <input type="checkbox" id="fBigOnly" style="width:auto;"> ⚑ big ≥
+        <input id="fBig" type="number" value="50000" title="Big-amount threshold ₹" style="width:90px;">
+      </label>
+      <button class="ghost" id="fClear" style="font-size:12px;">Clear</button>
+    </div>
+    <div id="txnCount" class="muted" style="font-size:12px;margin-bottom:8px;"></div>
+    <table>
+      <thead><tr>
+        <th>Date</th><th>Account</th><th>Merchant</th><th>Category</th>
+        <th>Type</th><th style="text-align:right">Amount</th>
+      </tr></thead>
+      <tbody id="txnBody"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const fmt = n => "₹" + Number(n).toLocaleString("en-IN", {minimumFractionDigits:2, maximumFractionDigits:2});
+const $ = id => document.getElementById(id);
+let catChart, acctChart, trendChart;
+const CATEGORIES = ["Food & Dining","Groceries","Shopping","Transport","Travel",
+  "Entertainment","Bills & Utilities","Health","Fuel","Family","Investment","Rent","Uncategorized"];
+const TYPES = ["purchase","refund","card_payment","transfer"];
+
+function currentMonth() {
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0");
+}
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) { const e = await r.json().catch(()=>({detail:r.statusText})); throw new Error(e.detail||"error"); }
+  return r.json();
+}
+
+let rangeMode = false;
+
+// Build the query string for the current view: a single month, or a from→to range.
+function currentQuery() {
+  if (rangeMode) {
+    const f = $("fromMonth").value, t = $("toMonth").value;
+    if (f && t) return `from=${f}&to=${t}`;
+  }
+  return `month=${$("month").value}`;
+}
+
+async function loadAll() {
+  const q = currentQuery();
+  const [summary, txns] = await Promise.all([
+    api(`/summary?${q}`),
+    api(`/transactions?${q}`),
+  ]);
+  lastSummary = summary;
+  allTxns = txns;
+  renderCards(summary);
+  renderCharts(summary);
+  populateTxnFilters(summary, txns);
+  applyTxnFilters();
+}
+
+// ---- Transaction filters (client-side over the already-fetched txns) ----
+let allTxns = [];
+
+function populateTxnFilters(summary, txns) {
+  // Accounts from summary; categories from the txns present.
+  const accSel = $("fAccount"), catSel = $("fCategory");
+  const accPrev = accSel.value, catPrev = catSel.value;
+  const accounts = (summary.by_account || []).map(a => [a.last4, `${a.bank} ••${a.last4}`]);
+  accSel.innerHTML = `<option value="">All accounts</option>` +
+    accounts.map(([v,l]) => `<option value="${v}">${l}</option>`).join("");
+  const cats = [...new Set(txns.map(t => t.category).filter(Boolean))].sort();
+  catSel.innerHTML = `<option value="">All categories</option>` +
+    cats.map(c => `<option value="${c}">${c}</option>`).join("");
+  accSel.value = accPrev; catSel.value = catPrev;   // preserve selection across reloads
+}
+
+function applyTxnFilters() {
+  const q = $("fSearch").value.trim().toLowerCase();
+  const acc = $("fAccount").value, cat = $("fCategory").value, typ = $("fType").value;
+  const min = parseFloat($("fMin").value), max = parseFloat($("fMax").value);
+  const from = $("fFrom").value, to = $("fTo").value;
+  const bigOnly = $("fBigOnly").checked, bigT = bigThreshold();
+
+  const filtered = allTxns.filter(t => {
+    const merchant = (t.merchant_clean || t.merchant_raw || "").toLowerCase();
+    if (q && !merchant.includes(q)) return false;
+    if (acc && t.last4 !== acc) return false;
+    if (cat && t.category !== cat) return false;
+    if (typ && t.txn_type !== typ) return false;
+    if (!isNaN(min) && t.amount < min) return false;
+    if (!isNaN(max) && t.amount > max) return false;
+    if (from && (t.txn_date || "") < from) return false;
+    if (to && (t.txn_date || "") > to) return false;
+    if (bigOnly && t.amount < bigT) return false;
+    return true;
+  });
+  renderTxns(filtered);
+
+  // Show count + filtered net spend (purchases − refunds among the matches).
+  const net = filtered.reduce((s,t) =>
+    s + (t.txn_type==="purchase" ? t.amount : t.txn_type==="refund" ? -t.amount : 0), 0);
+  const active = (allTxns.length !== filtered.length);
+  $("txnCount").textContent =
+    `${filtered.length} of ${allTxns.length} transactions` +
+    (active ? ` · net spend ₹${net.toLocaleString("en-IN",{maximumFractionDigits:0})}` : "");
+}
+
+async function loadAiCost() {
+  try {
+    const u = await api("/ai-usage");
+    const el = $("aiCost");
+    if (u.calls > 0) {
+      const tok = (u.input_tokens + u.output_tokens);
+      el.style.display = "inline";
+      el.textContent = `🤖 $${u.cost_usd.toFixed(4)} · ${tok.toLocaleString()} tok · ${u.calls} calls`;
+    } else {
+      el.style.display = "none";
+    }
+  } catch {}
+}
+
+async function loadMonths() {
+  const months = await api("/months");
+  const sel = $("monthPick");
+  if (!months.length) { sel.innerHTML = `<option value="">no data yet</option>`; return; }
+  sel.innerHTML = months.map(m => `<option value="${m}">${m}</option>`).join("");
+  // Keep the dropdown in sync with the current picker value.
+  if (months.includes($("month").value)) sel.value = $("month").value;
+}
+
+// Quick client-side guess of what an unparsed email is, so the user can tell junk
+// from a possible missed transaction at a glance (no AI needed for this).
+function guessType(u) {
+  const s = ((u.subject||"") + " " + (u.snippet||"")).toLowerCase();
+  if (/log on|logged on|login|secure usage|terms & conditions|t&c|face id|mobile banking app/.test(s))
+    return { label: "login / app notice", junk: true };
+  if (/statement|e-statement/.test(s)) return { label: "statement", junk: true };
+  if (/otp|one time password/.test(s)) return { label: "OTP", junk: true };
+  if (/registered|enabled|activated/.test(s)) return { label: "account notice", junk: true };
+  if (/debited|credited|spent|payment|transaction|txn|purchase/.test(s))
+    return { label: "possible transaction", junk: false };
+  return { label: "unknown", junk: false };
+}
+
+async function loadUnparsed() {
+  const items = await api("/debug/unparsed");
+  const box = $("unparsedBox");
+  if (!items.length) { box.style.display = "none"; return; }
+  box.style.display = "block";
+  $("unparsedCount").textContent = items.length;
+  $("unparsedList").innerHTML = items.map(u => {
+    const g = guessType(u);
+    const tag = `<span class="tag ${g.junk ? 'excluded' : 'refund'}">${g.label}</span>`;
+    return `
+    <div id="unp-${u.source_email_id}" style="border-bottom:1px solid var(--border);padding:8px 0;font-size:13px;">
+      <div class="row" style="justify-content:space-between;align-items:flex-start;">
+        <div style="flex:1;min-width:0;">
+          <div class="muted">${u.received_at||""} · ${(u.sender||"").replace(/</g,"&lt;")} ${tag}</div>
+          <div>${(u.subject||"").replace(/</g,"&lt;")}</div>
+          <div class="muted" style="font-size:12px;">${(u.snippet||"").slice(0,160).replace(/</g,"&lt;")}…</div>
+        </div>
+        <button class="ghost" style="font-size:12px;white-space:nowrap;"
+          onclick="retryLlm('${u.source_email_id}', this)">✨ Extract with AI</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+// On-demand: run the LLM on ONE unparsed email only when the user asks.
+async function retryLlm(emailId, btn) {
+  btn.disabled = true; btn.textContent = "✨ Working…";
+  try {
+    const r = await api(`/unparsed/${emailId}/retry-llm`, { method: "POST" });
+    await loadAiCost();
+    if (r.status === "added") {
+      // extracted -> refresh everything (row is gone from unparsed)
+      await loadMonths(); await loadAll(); await loadUnparsed();
+    } else {
+      // not a transaction -> now marked reviewed; drop the row from the panel
+      const row = document.getElementById(`unp-${emailId}`);
+      if (row) row.remove();
+      const c = $("unparsedCount");
+      const n = Math.max(0, parseInt(c.textContent || "1") - 1);
+      c.textContent = n;
+      if (n === 0) $("unparsedBox").style.display = "none";
+    }
+  } catch (e) {
+    btn.textContent = "Error"; btn.disabled = false; alert(e.message);
+  }
+}
+window.retryLlm = retryLlm;
+
+function renderCards(s) {
+  const el = $("accountCards");
+  let html = `<div class="card hero"><div class="label">Total Spend</div>
+      <div class="value">${fmt(s.total_spend)}</div>
+      <div class="sub">${s.month}</div></div>`;
+  if (s.refunds && s.refunds.count > 0) {
+    html += `<div class="card"><div class="label">Refunds / paybacks</div>
+      <div class="value" style="color:var(--good)">−${fmt(s.refunds.amount)}</div>
+      <div class="sub">${s.refunds.count} txns reduce spend</div></div>`;
+  }
+  if (s.excluded_transfers.count > 0) {
+    html += `<div class="card"><div class="label">Excluded (bills/transfers)</div>
+      <div class="value muted">${fmt(s.excluded_transfers.amount)}</div>
+      <div class="sub">${s.excluded_transfers.count} txns not counted</div></div>`;
+  }
+  for (const a of s.by_account) {
+    if (!a.spend) continue;
+    html += `<div class="card"><div class="label">${a.name}</div>
+      <div class="value">${fmt(a.spend)}</div>
+      <div class="sub">${a.bank} ••${a.last4}</div></div>`;
+  }
+  el.innerHTML = html;
+}
+
+function renderCharts(s) {
+  // Palette drawn from the site's blue/cyan/purple family + complementary hues.
+  const palette = ["#60A5FA","#22D3EE","#8B5CF6","#34d399","#f59e5b","#ef5b8d",
+                   "#3B82F6","#06B6D4","#a78bfa","#fbbf24","#5eead4","#94a3b8"];
+  const GRID = "rgba(148,163,184,.10)", TICK = "#94a3b8";
+  Chart.defaults.font.family = "Inter, sans-serif";
+  // Stable category -> color map so the donut and the stacked bar agree.
+  const cats = s.by_category.filter(c => c.spend > 0);
+  const colorOf = {};
+  cats.forEach((c, i) => { colorOf[c.category] = palette[i % palette.length]; });
+
+  // category donut
+  catChart && catChart.destroy();
+  catChart = new Chart($("catChart"), {
+    type:"doughnut",
+    data:{ labels:cats.map(c=>c.category),
+      datasets:[{ data:cats.map(c=>c.spend), backgroundColor:cats.map(c=>colorOf[c.category]),
+        borderColor:"#0d0d1a", borderWidth:2, hoverOffset:6 }]},
+    options:{ cutout:"62%", plugins:{ legend:{ position:"right",
+      labels:{color:"#e2e8f0",boxWidth:12,padding:10,font:{size:12}}}}}
+  });
+
+  // per-account STACKED bar: each account split into its category segments.
+  const accts = s.by_account.filter(a => a.spend > 0);
+  const labels = accts.map(a => `${a.bank} ••${a.last4}`);
+  const acctKey = accts.map(a => a.last4);
+  const ac = s.by_account_category || [];
+  // one dataset per category, value = that category's spend on each account
+  const catNames = [...new Set(ac.map(r => r.category))];
+  const datasets = catNames.map(cat => ({
+    label: cat,
+    data: acctKey.map(l4 => {
+      const row = ac.find(r => r.last4 === l4 && r.category === cat);
+      return row ? row.spend : 0;
+    }),
+    backgroundColor: colorOf[cat] || palette[catNames.indexOf(cat) % palette.length],
+  }));
+  datasets.forEach(d => { d.borderRadius = 6; d.borderSkipped = false; });
+  acctChart && acctChart.destroy();
+  acctChart = new Chart($("acctChart"), {
+    type:"bar",
+    data:{ labels, datasets },
+    options:{
+      plugins:{ legend:{ position:"bottom", labels:{color:TICK,boxWidth:11,padding:8,font:{size:10}}}},
+      scales:{ x:{ stacked:true, ticks:{color:TICK,font:{size:11}}, grid:{display:false} },
+               y:{ stacked:true, ticks:{color:TICK}, grid:{color:GRID} } } }
+  });
+  // trend — cyan gradient fill
+  trendChart && trendChart.destroy();
+  const tctx = $("trendChart").getContext("2d");
+  const tgrad = tctx.createLinearGradient(0,0,0,140);
+  tgrad.addColorStop(0,"rgba(34,211,238,.32)"); tgrad.addColorStop(1,"rgba(34,211,238,0)");
+  trendChart = new Chart($("trendChart"), {
+    type:"line",
+    data:{ labels:s.trend.map(t=>t.month),
+      datasets:[{ data:s.trend.map(t=>t.spend), borderColor:"#22D3EE",
+        backgroundColor:tgrad, fill:true, tension:.35, pointBackgroundColor:"#22D3EE",
+        pointBorderColor:"#0d0d1a", pointRadius:4, borderWidth:2.5 }]},
+    options:{ plugins:{legend:{display:false}},
+      scales:{ x:{ticks:{color:TICK},grid:{display:false}}, y:{ticks:{color:TICK},grid:{color:GRID}} } }
+  });
+}
+
+let lastSummary = null;
+
+function renderTxns(txns) {
+  const body = $("txnBody");
+  if (!txns.length) { body.innerHTML = `<tr><td colspan="6" class="muted">No transactions. Click “Sync now”.</td></tr>`; return; }
+  body.innerHTML = txns.map(t => {
+    const excluded = (t.txn_type === "card_payment" || t.txn_type === "transfer");
+    const big = t.amount >= bigThreshold();
+    const catSel = `<select class="cat-edit" onchange="editTxn(${t.id},'category',this.value)">` +
+      CATEGORIES.map(c=>`<option ${c===t.category?'selected':''}>${c}</option>`).join("") + `</select>`;
+    const typeSel = `<select class="type-edit" onchange="editTxn(${t.id},'txn_type',this.value)">` +
+      TYPES.map(ty=>`<option ${ty===t.txn_type?'selected':''}>${ty}</option>`).join("") + `</select>`;
+    const tag = excluded ? `<span class="tag excluded">excluded</span>`
+      : (t.txn_type==="refund" ? `<span class="tag refund">refund</span>` : "");
+    const bigTag = big ? `<span class="tag big" title="Large transaction — review">⚑ big</span>` : "";
+    return `<tr class="${big ? 'bigrow' : ''}">
+      <td>${t.txn_date||""}</td>
+      <td>${t.account_name||"—"}<br><span class="muted" style="font-size:11px">${t.bank||""} ${t.last4?'••'+t.last4:''}</span></td>
+      <td>${t.merchant_clean||t.merchant_raw||"—"} ${bigTag}</td>
+      <td>${excluded?'<span class="muted">—</span>':catSel}</td>
+      <td>${typeSel} ${tag}</td>
+      <td style="text-align:right" class="amount ${t.direction}">
+        ${t.direction==='credit'?'+':''}${fmt(t.amount)}</td>
+    </tr>`;
+  }).join("");
+}
+
+function bigThreshold() {
+  const v = parseFloat($("fBig") && $("fBig").value);
+  return isNaN(v) || v <= 0 ? 50000 : v;
+}
+
+async function editTxn(id, field, value) {
+  await api(`/transactions/${id}`, {
+    method:"PATCH", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ [field]: value }) });
+  loadAll();
+}
+window.editTxn = editTxn;
+
+$("toggleUnparsed").onclick = () => {
+  const list = $("unparsedList");
+  const show = list.style.display === "none";
+  list.style.display = show ? "block" : "none";
+  $("toggleUnparsed").textContent = show ? "hide" : "show";
+};
+
+$("retryAllBtn").onclick = async () => {
+  const n = $("unparsedCount").textContent || "these";
+  if (!confirm(`Run AI on all ${n} unparsed emails? This is slower and uses AI for each one.`)) return;
+  const btn = $("retryAllBtn");
+  btn.disabled = true;
+  try {
+    await api("/unparsed/retry-all-llm", { method: "POST" });
+    await pollSync({ showFeed: true, allowStop: true });   // live per-email feed + Stop
+    await loadMonths(); await loadAll(); await loadUnparsed(); await loadAiCost();
+  } catch (e) {
+    alert(e.message);
+  } finally { btn.disabled = false; }
+};
+
+function renderFeed(feed) {
+  if (!feed || !feed.length) return;
+  $("progressFeed").innerHTML = feed.slice().reverse().map(f => {
+    const icon = f.ok ? '<span style="color:var(--good)">✓</span>'
+                      : '<span class="muted">○</span>';
+    const detail = f.ok ? f.detail : `<span class="muted">${f.detail}</span>`;
+    return `<div style="padding:3px 0;border-bottom:1px solid var(--border);">
+      ${icon} ${(f.subject||"").replace(/</g,"&lt;")} — ${detail}</div>`;
+  }).join("");
+}
+
+// Poll /sync/status to drive the progress bar until the background job ends.
+// showFeed/allowStop are true for AI bulk jobs (per-email feed + Stop button).
+function pollSync(opts = {}) {
+  const { showFeed = false, allowStop = false } = opts;
+  return new Promise(resolve => {
+    const wrap = $("progressWrap"), bar = $("progressBar"), txt = $("progressText");
+    wrap.style.display = "block";
+    $("progressFeed").innerHTML = "";
+    $("stopBtn").style.display = allowStop ? "inline" : "none";
+    $("stopBtn").disabled = false; $("stopBtn").textContent = "■ Stop";
+    const tick = async () => {
+      let st;
+      try { st = await api("/sync/status"); } catch { return setTimeout(tick, 800); }
+      const pct = st.total > 0 ? Math.round((st.done / st.total) * 100) : (st.running ? 5 : 100);
+      bar.style.width = pct + "%";
+      bar.classList.remove("over");
+      txt.textContent = `${st.phase} ${st.total ? `(${st.done}/${st.total})` : ""}`;
+      if (showFeed) renderFeed(st.feed);
+      loadAiCost();   // refresh the cost counter LIVE as AI calls accrue
+      if (st.running) return setTimeout(tick, 600);
+      // finished
+      $("stopBtn").style.display = "none";
+      if (st.error) { txt.textContent = "Error: " + st.error; bar.classList.add("over"); }
+      else if (st.result) {
+        const r = st.result;
+        if ("added" in r && "skipped_duplicates" in r)
+          txt.textContent = `Added ${r.added} (${r.by_llm} via AI) · ${r.unparsed} unparsed · ${r.skipped_duplicates} dupes skipped`;
+        else if ("still_unparsed" in r)
+          txt.textContent = `${st.cancelled ? "Stopped — " : ""}Extracted ${r.added}, ${r.still_unparsed} not transactions`;
+        else if ("categorized" in r)
+          txt.textContent = `Categorized ${r.categorized} txns across ${r.merchants} merchants (${r.rules_added} rules saved)`;
+      }
+      setTimeout(() => { wrap.style.display = "none"; }, showFeed ? 8000 : 4000);
+      resolve();
+    };
+    tick();
+  });
+}
+
+$("stopBtn").onclick = async () => {
+  $("stopBtn").disabled = true; $("stopBtn").textContent = "Stopping…";
+  try { await api("/sync/stop", { method: "POST" }); } catch {}
+};
+
+$("syncBtn").onclick = async () => {
+  const btn = $("syncBtn");
+  btn.disabled = true; $("status").textContent = "";
+  try {
+    const days = parseInt($("syncDays").value);
+    await api("/sync", { method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ days }) });
+    await pollSync();
+    await loadMonths();
+    await loadAll();
+    await loadUnparsed();
+  } catch (e) {
+    $("status").textContent = "Error: " + e.message;
+  } finally { btn.disabled = false; }
+};
+
+$("catAiBtn").onclick = async () => {
+  if (!confirm("Use AI to categorize all Uncategorized transactions? It also saves rules so they stick next time.")) return;
+  const btn = $("catAiBtn"); btn.disabled = true;
+  try {
+    await api("/categorize-llm", { method: "POST" });
+    await pollSync();        // same progress bar
+    await loadAll(); await loadAiCost();
+  } catch (e) { alert(e.message); }
+  finally { btn.disabled = false; }
+};
+
+// Transaction filter controls — all client-side, instant.
+["fSearch","fMin","fMax","fBig"].forEach(id => $(id).oninput = applyTxnFilters);
+["fAccount","fCategory","fType","fFrom","fTo","fBigOnly"].forEach(id => $(id).onchange = applyTxnFilters);
+$("fClear").onclick = () => {
+  ["fSearch","fAccount","fCategory","fType","fMin","fMax","fFrom","fTo"].forEach(id => $(id).value = "");
+  $("fBigOnly").checked = false; $("fBig").value = "50000";
+  applyTxnFilters();
+};
+
+$("monthPick").onchange = () => { $("month").value = $("monthPick").value; loadAll(); };
+$("month").value = currentMonth();
+$("month").onchange = () => { loadMonths(); loadAll(); };
+
+// Toggle between single-month dropdown and a From→To range.
+$("rangeToggle").onclick = () => {
+  rangeMode = !rangeMode;
+  $("rangeControls").style.display = rangeMode ? "inline-flex" : "none";
+  $("monthPick").style.display = rangeMode ? "none" : "";
+  $("rangeToggle").textContent = rangeMode ? "✕ Single" : "📅 Range";
+  $("rangeToggle").classList.toggle("primary", rangeMode);
+  if (rangeMode) {
+    // Seed the range from available data: oldest→newest with data, else current month.
+    const opts = [...$("monthPick").options].map(o => o.value).filter(Boolean);
+    const newest = opts[0] || $("month").value;
+    const oldest = opts[opts.length - 1] || newest;
+    $("toMonth").value = newest;
+    $("fromMonth").value = oldest;
+    loadAll();
+  } else {
+    $("month").value = $("monthPick").value || $("month").value;
+    loadAll();
+  }
+};
+$("fromMonth").onchange = () => { if ($("toMonth").value) loadAll(); };
+$("toMonth").onchange = () => { if ($("fromMonth").value) loadAll(); };
+
+(async function init() {
+  await loadMonths();
+  // Default to the newest month that has data, else current month.
+  const months = $("monthPick").options;
+  if (months.length && months[0].value) $("month").value = months[0].value;
+  await loadAll();
+  await loadUnparsed();
+  await loadAiCost();
+})();
+</script>
+</body>
+</html>

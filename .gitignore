@@ -1,0 +1,26 @@
+# Secrets / OAuth — NEVER commit these
+credentials.json
+token.json
+*.keys.json
+client_secret*.json
+
+# Personal data (accounts, names, rent amounts) — keep local
+config.json
+
+# Local agent/editor config (may contain machine paths / ids)
+.claude/
+.vscode/
+.idea/
+
+# Local database
+*.db
+*.sqlite3
+
+# Python
+venv/
+__pycache__/
+*.pyc
+.env
+
+# OS
+.DS_Store

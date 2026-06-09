@@ -1,0 +1,26 @@
+{
+  "_comment": "Copy this to config.json and fill in YOUR details. config.json is gitignored and never committed. All fields are optional — omit a section to skip it.",
+
+  "accounts": [
+    {"name": "HDFC Credit Card", "type": "credit_card", "bank": "HDFC", "last4": "0000"},
+    {"name": "HDFC Savings",     "type": "savings",     "bank": "HDFC", "last4": "0001"},
+    {"name": "ICICI Credit Card","type": "credit_card", "bank": "ICICI","last4": "0002"}
+  ],
+
+  "_category_rules_comment": "Personal payees -> category. [pattern, category, priority]. Higher priority wins. Use for landlord/family/etc. whose name would otherwise be mis-categorized.",
+  "category_rules": [
+    ["landlord name here", "Rent", 25],
+    ["family member name", "Family", 20]
+  ],
+
+  "_amount_rules_comment": "Exact amount -> category, for fixed recurring payments to a person (e.g. rent). [amount, category, note].",
+  "amount_rules": [
+    [25000, "Rent", "monthly rent"]
+  ],
+
+  "_income_rules_comment": "Incoming credits matching these are IGNORED (not counted as a deduction): salary sender, your own other-bank name for self-transfers, family. Everything else coming in is treated as a payback that reduces spend.",
+  "income_rules": [
+    ["kotak", "self-transfer from my own other bank"],
+    ["family member name", "family support, not a reimbursement"]
+  ]
+}
