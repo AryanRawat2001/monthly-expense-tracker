@@ -44,9 +44,13 @@ def parse(subject: str, body: str) -> ParsedTxn | None:
     if amount is None or last4 is None:
         return None
 
-    # "spent" = debit/purchase. Refund wording flips it.
+    # "spent" = debit/purchase. Refund wording flips it. Bare "credited" is NOT
+    # enough — footers say "cashback will be credited", which must not turn a
+    # purchase into a spend-subtracting refund. Require explicit refund/reversal
+    # language or "credited to your ..." aimed at this card.
     direction, txn_type = "debit", "purchase"
-    if re.search(r"refund|reversed|credited", text + " " + subject, re.IGNORECASE):
+    if re.search(r"refund|revers(?:ed|al)|credited to your",
+                 text + " " + subject, re.IGNORECASE):
         direction, txn_type = "credit", "refund"
 
     return ParsedTxn(

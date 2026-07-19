@@ -34,6 +34,15 @@ Rent) via `categorize.categorize(merchant, amount)`, which checks amount rules F
 rules also catch a new landlord whose name isn't known yet. (Real names/amounts live in the
 gitignored `config.json`, not here.)
 
+**Rent month attribution (`period` column).** Rent is paid a few days *before* the month
+it's for (rent sent June 29 is July's rent). Every txn gets an attribution month:
+`db.period_for(txn_date, category)` — equal to the txn's own month, EXCEPT Rent dated
+on/after `rent_shift_day` (config.json, default 25), which shifts to the next month. ALL
+month bucketing (summaries, trend, insights, transaction lists, recurring detection) groups
+by `COALESCE(period, substr(txn_date,1,7))` — see `db._month_expr()`. The txn keeps its true
+bank date; changing a row's category (PATCH / AI categorize) recomputes its period. In the
+pace chart an early-paid rent counts from day 1 of its attributed month.
+
 **Incoming money model (`income_rules` table)** — user's rule: *any money coming INTO the
 savings account DEDUCTS from total spend* (it offsets what was spent), **except** an
 ignore-list of salary / self-transfers / family. So in `classify.finalize_txn_type`, an
@@ -74,8 +83,15 @@ like the `to <BANK> CREDIT CARD` case.
     merchant name** (so a merchant named "...card..." isn't excluded).
   - Generic rails (`bbps`, `billdesk`) only count as a card payment when "card" also
     appears — so a real BBPS electricity bill from savings still counts as spend.
+  - The CRED-family patterns (`cred`, `@cred`, `yescred`) are **filtered out of the
+    plain-substring transfer matcher** (`_CRED_FAMILY`) — they're handled only by the
+    word-boundary `_CRED_RE`. Otherwise "cred" matches inside "credited"/"incredible"
+    and silently excludes real purchases (this was a real bug, now pinned by a test).
+- `parsers/axis.py` — refund detection requires explicit `refund|revers…|credited to
+  your` wording; a bare "credited" (e.g. "cashback will be credited" footers) must NOT
+  flip a purchase into a spend-subtracting refund (also a real bug, now tested).
 
-When editing anything that touches money, re-run the verification tests below.
+When editing anything that touches money, run `python -m pytest tests/` (see Verification).
 
 ## Accounts (loaded from `config.json` → `db.py:SEED_ACCOUNTS`, matched by last4)
 
@@ -94,7 +110,9 @@ Senders + body shapes:
 - **HDFC** — `alerts@hdfcbank.net` / `alerts@hdfcbank.bank.in` (all 3 cards + savings).
   HDFC uses MANY wordings; `parsers/hdfc.py` tries each. Observed real formats:
   - **Card (POS/online):** `Rs.50.00 is debited from your HDFC Bank Credit Card ending XXXX towards PYU*MERCHANT on 08 Apr, 2026 at 20:10:11.`
+  - **Card ("We noticed a transaction", from Jul 2026):** `Thank you for using your HDFC Bank Credit Card ending in XXXX .You made a transaction of Rs. 295.00 at RAZ*MERCHANT on 11-07-2026 20:07:07 .` (note gateway prefix `RAZ*` — stripped by `clean_merchant`)
   - **Card via UPI (newer):** `Rs.6.00 is debited from your HDFC Bank RuPay Credit Card ending XXXX and credited to VPA paytm-...@ptybl (MERCHANT NAME) on 01 Jun, 2026.`
+  - **RuPay card UPI (table wording, from Jun 2026):** `Rs.191.00 has been debited from your RuPay Credit Card XXXX Paid to q...@ybl Date: 16-06-26 UPI Transaction Reference Number: ...` (no "ending", payee is a bare VPA)
   - **Savings UPI debit (old):** `Rs.161.00 has been debited from account XXXX to VPA xxx@axl NAME on 06-04-26.`
   - **Savings UPI debit (new .bank.in):** `Rs.517.00 is debited from your account ending XXXX towards VPA xxx@ibl (PAYEE NAME) on 08-06-26.` (note "account ending", "towards VPA", payee in parentheses)
   - **Savings credit (old):** `Rs. 3250.00 is successfully credited to your account **XXXX by VPA xxx NAME on 31-01-26.`
@@ -105,6 +123,7 @@ Senders + body shapes:
     safely land in `unparsed` rather than being counted.
 - **ICICI** — `credit_cards@icici.bank.in`:
   `Your ICICI Bank Credit Card XXXXXX has been used for a transaction of INR 634.00 on May 15, 2026 ... Info: AMAZON PAY IN E COMMERCE.`
+  - **🔴 Payment received (from Jul 2026):** `We have received payment of INR 724 on your ICICI Bank Credit Card account 1234 XXXX XXXX 5678 on 15-JUL-26 through Click to Pay.` → `card_payment` (EXCLUDED); the real last4 is the FINAL digit group (5678), not the first.
   (Marketing from `custcomm`/`customercomm.icicibank.com` — IGNORED.)
 - **HSBC** — `hsbc@mail.hsbc.co.in`:
   `your Credit card no ending with XXXX, has been used for INR 2258.36 for payment to MERCHANT on 07 Jun 2026 at 23:21.`
@@ -124,18 +143,25 @@ statement-ready notices). So `is_ignored(sender, subject)` also filters by subje
 ## Architecture / files
 
 ```
-app.py            FastAPI: routes + serves the dashboard; background sync thread + progress state
+app.py            FastAPI: routes + dashboard; background jobs; local-only security middleware
 gmail_sync.py     Gmail OAuth (readonly) + fetch + orchestrate parse→classify→categorize→insert
 parsers/
   base.py         ParsedTxn dataclass; html_to_text, parse_amount, parse_date, clean_merchant
-  __init__.py     sender→parser registry (_ROUTES) + _IGNORE marketing senders
+  __init__.py     sender→parser registry (_ROUTES, matched on the addr-spec via parseaddr,
+                  never the display name) + _IGNORE marketing senders + subject regex
   hdfc.py icici.py hsbc.py axis.py   per-bank regex parsers (built from the formats above)
 classify.py       finalize_txn_type() — transfer/bill detection (the no-double-count logic)
 categorize.py     merchant → spend category via editable rules
 llm.py            claude-CLI fallback: rich prompt + DETERMINISTIC VERIFIER (see below)
-db.py             SQLite schema, seed data, dedupe insert, summary/trend queries
-static/index.html single-page dashboard (vanilla JS + Chart.js via CDN)
+db.py             SQLite schema (WAL), seed data, dedupe insert, summaries, insights/estimator
+static/index.html single-page dashboard (vanilla JS + Chart.js via CDN); esc() everything
+tests/            pytest suite — parsers, classify, categorize, LLM verifier, db math,
+                  insights, ingest pipeline, API + security middleware (hermetic: uses
+                  EXPENSES_DB / EXPENSES_CONFIG env overrides, never the real data)
 ```
+
+**Env overrides:** `EXPENSES_DB` and `EXPENSES_CONFIG` relocate the SQLite file and
+`config.json` (used by tests; handy for experiments against a copy of the data).
 
 **Data flow per email:** `sync()` lists message IDs (for the progress total) → for each:
 fetch → route to bank parser (regex) → if None and enabled, LLM fallback → resolve
@@ -160,10 +186,17 @@ slow and spent tokens on every promo/OTP). Instead:
   click is explicit consent.
 
 **Model + cost.** AI calls use `claude -p --model sonnet --output-format json` (Sonnet ≈5×
-cheaper than Opus; override via `AI_MODEL` env). `llm._run_claude()` parses `total_cost_usd` +
-token `usage` from the JSON envelope and records each call in the `ai_usage` table. `GET
+cheaper than Opus; override via `AI_MODEL` env), **plus `--tools "" --strict-mcp-config
+--no-session-persistence`** — email bodies are untrusted input, so the CLI gets no tools,
+no MCP servers, and writes no session transcript (a prompt-injected email can't read files,
+hit the network, or persist itself). This matters even more when the local Claude settings
+run with permissive tool defaults (e.g. `bypassPermissions`) — never weaken these flags.
+`llm._run_claude()` parses `total_cost_usd`
++ token `usage` from the JSON envelope and records each call in the `ai_usage` table. `GET
 /ai-usage` returns running totals; the dashboard header shows a **🤖 cost counter**
-(`$cost · tokens · calls`). Cost tracking is best-effort and never breaks extraction.
+(`$cost · tokens · calls`). With a **Claude subscription (SSO) login**, `total_cost_usd` is the
+API-equivalent estimate (covered by the plan, not billed per call). Cost
+tracking is best-effort and never breaks extraction.
 
 Principle: **the LLM proposes, a deterministic verifier disposes.** Every returned field is
 validated before it can enter totals:
@@ -187,9 +220,11 @@ validated before it can enter totals:
 - **Batched Gmail fetch.** Phase 1 lists all matching message IDs (for the total); Phase 2
   fetches them via Gmail **batch HTTP requests** (`_BATCH_SIZE = 50`) instead of one call per
   message — ~10× fewer round-trips. Already-seen IDs are skipped *before* fetching, so
-  re-syncs are near-instant (dedupe on Gmail message id).
-- **`max_messages` cap** in `sync()` (default 500). Raise it for deep historical syncs; the
-  30-day window is well under it.
+  re-syncs are near-instant (dedupe on Gmail message id). Ignored senders/subjects are also
+  logged as pre-reviewed `unparsed` rows so they're skipped before fetching on re-syncs.
+- **`max_messages` cap** in `sync()` (default 2000, settable per-request via POST /sync).
+  The result includes `capped: true` when the listing hit the cap (surfaced in the UI) so a
+  deep sync can't silently truncate.
 
 ## Period selection & transaction filters
 
@@ -204,6 +239,27 @@ validated before it can enter totals:
   account, category, type, min/max ₹, from/to date, and a **⚑ big ≥ threshold** (default ₹50k)
   with a "big only" checkbox. Big rows get an amber ⚑ tag + row highlight for review. A count
   line shows "X of Y" and the filtered net spend.
+
+## Insights / month-end estimator (`GET /insights?month=YYYY-MM`)
+
+`db.insights_for_month(month, today=None)` (today injectable for tests) powers an Insights
+section (hidden in range mode). Components:
+- **Projection** (current month only): `spend_so_far + daily_run_rate × days_remaining`,
+  with the **median of the 3 prior months** as a "typical month" reference, and the sum of
+  known **recurring payments not yet billed** this month shown alongside (rent late in the
+  month is invisible to a run-rate).
+- **Spend pace chart**: cumulative day-by-day line for the selected month (cyan) vs the
+  previous month (gray dashed benchmark), overlaid by day-of-month.
+- **MoM movers**: per-category delta vs the previous month; **top merchants** (net, grouped
+  case-insensitively); **biggest purchase**; **average/day**.
+- **Recurring detection**: same merchant + same exact amount in **≥3 distinct months** (the
+  exact repeated amount is the subscription/rent signature; varying grocery spend at one
+  shop correctly does not match). Shows billed/pending state for the month.
+- **Duplicate suspects**: identical (account, amount, date, merchant) purchases counted
+  more than once — flagged for review, never auto-dropped (bank may send 2 alerts for 1
+  swipe; the user flips the extra to `transfer`).
+- `summary_for_range` also returns an **`unassigned`** bucket (spend rows whose last4
+  matched no account) so per-account cards visibly reconcile with the total.
 
 ## DB schema (SQLite, `expenses.db`)
 
@@ -225,25 +281,54 @@ uvicorn app:app --reload          # first sync opens a browser for Google consen
 
 `LLM_FALLBACK=0 uvicorn app:app` to disable the AI fallback (fully offline except Gmail).
 
+> **Running from a Claude Code session:** launch uvicorn OUTSIDE the command sandbox
+> (it denies `**/*.pem` reads → certifi's CA bundle can't load → Gmail TLS fails with
+> "Could not find a suitable TLS CA certificate bundle" the moment a sync starts).
+> Local curl smoke tests and `pytest` are fine sandboxed.
+
 ## Verification (run after any money-touching change)
 
-The repo has no formal test suite yet; these are the manual checks that must pass:
-1. **Double-count:** purchases counted once; a CRED/BillDesk card-bill debit from savings
-   is `card_payment` and excluded. Total = Σ purchases − Σ refunds.
-2. **BBPS not over-excluded:** a plain BBPS electricity bill from savings (no "card"
-   context) counts as spend.
-3. **Refund stays refund:** a refund mentioning "credited to your card" must subtract,
-   not be reclassified to `card_payment`.
-4. **Parsers:** every format in "Real email formats" extracts correct
-   amount/last4/merchant/date — including HDFC's UPI-on-card, new `.bank.in` debit/credit,
-   and the NetBanking card-payment variant.
-5. **NetBanking card-bill → excluded:** `payment of Rs.X from A/c XXXX to <BANK> CREDIT CARD`
-   classifies as `card_payment`.
-6. **LLM verifier:** fabricated amounts and credit-limit figures are rejected.
-7. **Incoming-money model:** a friend payback (UPI credit not in `income_rules`) → `refund`
-   (deducts); a family/Kotak/self credit → `transfer` (ignored). Range total = Σ months.
-8. Server boots; `/months`, `/summary` (both `?month=` and `?from=&to=`), `/sync/status`
-   respond; donut slices sum to total; ⚑ big rows flag; unparsed panel renders.
+**The checks below are AUTOMATED** — run them with:
+
+```bash
+pip install -r requirements-dev.txt   # once
+python -m pytest tests/               # ~120 tests, <2s, hermetic (temp DB/config)
+```
+
+What the suite pins (tests/):
+1. **Double-count** (`test_classify.py`, `test_db.py`): purchases counted once; CRED ≥
+   threshold / BillDesk-with-card / NetBanking card-bill debits are `card_payment` and
+   excluded; Total = Σ purchases − Σ refunds; range total = Σ months.
+2. **BBPS not over-excluded**; **"cred" never matches inside "credited"/"incredible"**.
+3. **Refund stays refund** (authoritative, never reclassified); Axis footer "cashback will
+   be credited" must NOT flip a purchase to refund.
+4. **Parsers** (`test_parsers.py`): every format in "Real email formats", routing by
+   addr-spec (display-name spoofing rejected), ignore rules with word boundaries.
+5. **LLM verifier** (`test_llm_verifier.py`): fabricated amounts, credit-limit figures, and
+   partial digit-runs (58712 inside "2,58,712") rejected; last4/date/category validation;
+   LLM txn_date >40 days from the email's own date is clamped (`test_ingest.py`).
+6. **Incoming-money model**: friend payback → `refund` (deducts); own-other-bank/family → `transfer`.
+7. **Insights** (`test_insights.py`): projection math, MoM, recurring, duplicates, pace.
+8. **API + security** (`test_api.py`): endpoints, validation, background-job lifecycle,
+   foreign-Host 421, cross-origin-POST 403, CSP headers.
+
+For UI-only changes also do a quick manual pass: server boots, dashboard renders, donut
+slices sum to total, Insights section renders for a single month.
+
+## Security model (local single-user app — still defended)
+
+- **Middleware** (`app.py:local_only_guard`): rejects requests whose `Host` isn't loopback
+  (DNS-rebinding steals data through the victim's own browser otherwise) and unsafe-method
+  requests with a non-local `Origin` (CSRF could trigger paid AI runs / deletes). Also sets
+  CSP (`connect-src 'self'` blocks exfil), nosniff, DENY framing.
+- **Stored XSS**: merchant names/subjects/snippets come from emails; entity-encoded markup
+  survives `html_to_text` as live `<` chars. The dashboard escapes ALL email-derived strings
+  via `esc()` before innerHTML. Never interpolate a txn/unparsed field without it.
+- **Sender routing** uses `parseaddr` — display names are attacker-controlled and Gmail's
+  `from:` search matches them too.
+- **AI fallback**: untrusted email + `--tools "" --strict-mcp-config
+  --no-session-persistence` + deterministic verifier. Never weaken these flags.
+- `token.json` (mailbox access) written with mode 600.
 
 **UI:** redesigned to match the user's "Aryan_Website" aesthetic (navy + blue/cyan/purple
 gradients, glassy gradient-border cards, Exo 2/Inter/Roboto Mono). Pure reskin of

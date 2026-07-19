@@ -138,7 +138,7 @@
     <option value="365">Last 1 year</option>
   </select>
   <span class="spacer"></span>
-  <span id="aiCost" class="tag" title="Total AI spend (Sonnet) since you started"></span>
+  <span id="aiCost" class="tag" title="Estimated API-equivalent AI usage — covered by your Claude subscription, not billed per call"></span>
   <span id="status" class="muted"></span>
 </header>
 
@@ -169,6 +169,26 @@
   </div>
   <div class="chart-box" style="margin-bottom:20px;">
     <h3>Monthly trend</h3><canvas id="trendChart" height="90"></canvas>
+  </div>
+
+  <div id="insightsWrap" style="display:none;">
+    <div class="section-title">Insights</div>
+    <div class="grid cards" id="insightCards"></div>
+    <div class="grid charts">
+      <div class="chart-box"><h3>Spend pace
+        <span class="muted" style="font-size:11px;font-weight:400;">cumulative, day by day</span></h3>
+        <canvas id="paceChart" height="240"></canvas></div>
+      <div class="chart-box"><h3>Top merchants</h3><div id="topMerchants"></div></div>
+    </div>
+    <div class="grid charts">
+      <div class="chart-box"><h3>Category movers
+        <span class="muted" style="font-size:11px;font-weight:400;">vs previous month</span></h3>
+        <div id="catMovers"></div></div>
+      <div class="chart-box"><h3>Recurring payments
+        <span class="muted" style="font-size:11px;font-weight:400;">same amount, 3+ months</span></h3>
+        <div id="recurringList"></div></div>
+    </div>
+    <div class="notice" id="dupWarn" style="display:none;border-color:rgba(245,158,91,.45);"></div>
   </div>
 
   <div class="chart-box" id="unparsedBox" style="margin-bottom:20px; display:none;">
@@ -218,8 +238,15 @@
 
 <script>
 const fmt = n => "₹" + Number(n).toLocaleString("en-IN", {minimumFractionDigits:2, maximumFractionDigits:2});
+// Escape EVERYTHING that originated in an email (merchant names, subjects,
+// snippets…) before it goes into innerHTML. Entity-encoded markup in a mail
+// survives the server's tag-stripping as live "<" characters, so skipping this
+// is a stored-XSS hole.
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const $ = id => document.getElementById(id);
-let catChart, acctChart, trendChart;
+const fmt0 = n => "₹" + Number(n).toLocaleString("en-IN", {maximumFractionDigits:0});
+let catChart, acctChart, trendChart, paceChart;
 const CATEGORIES = ["Food & Dining","Groceries","Shopping","Transport","Travel",
   "Entertainment","Bills & Utilities","Health","Fuel","Family","Investment","Rent","Uncategorized"];
 const TYPES = ["purchase","refund","card_payment","transfer"];
@@ -258,6 +285,153 @@ async function loadAll() {
   renderCharts(summary);
   populateTxnFilters(summary, txns);
   applyTxnFilters();
+  loadInsights();   // month-centric; hides itself in range mode
+}
+
+// ---- Insights (estimator + analysis for the selected single month) ----
+async function loadInsights() {
+  const wrap = $("insightsWrap");
+  if (rangeMode || !$("month").value) { wrap.style.display = "none"; return; }
+  let ins;
+  try { ins = await api(`/insights?month=${$("month").value}`); }
+  catch { wrap.style.display = "none"; return; }
+  wrap.style.display = "block";
+  renderInsights(ins);
+}
+
+function renderInsights(ins) {
+  const p = ins.projection;
+  const daysLeft = p.days_in_month - p.days_elapsed;
+  // Known subscriptions/rent that haven't billed yet this month — the run-rate
+  // can't see them coming, so surface them next to the projection.
+  const pending = (ins.recurring || [])
+    .filter(r => !r.active_this_month)
+    .reduce((s, r) => s + r.amount, 0);
+
+  let cards = "";
+  if (p.is_current) {
+    cards += `<div class="card hero"><div class="label">Projected month-end</div>
+      <div class="value">${fmt0(p.projected)}</div>
+      <div class="sub">${fmt0(p.daily_rate)}/day pace · ${daysLeft} days left${
+        p.typical_month ? ` · typical month ${fmt0(p.typical_month)}` : ""}${
+        pending > 0 ? `<br>+ ${fmt0(pending)} recurring not yet billed` : ""}</div></div>`;
+  }
+  if (ins.prev_total) {
+    const up = ins.mom_delta > 0;
+    cards += `<div class="card"><div class="label">vs ${esc(ins.prev_month)}</div>
+      <div class="value" style="color:${up ? "#f7a3ad" : "var(--good)"}">
+        ${up ? "▲" : "▼"} ${fmt0(Math.abs(ins.mom_delta))}</div>
+      <div class="sub">${ins.mom_pct === null ? "" : (up ? "+" : "") + ins.mom_pct + "% · "}last month ${fmt0(ins.prev_total)}</div></div>`;
+  }
+  cards += `<div class="card"><div class="label">Average per day</div>
+    <div class="value">${fmt0(ins.total / Math.max(p.days_elapsed, 1))}</div>
+    <div class="sub">over ${p.days_elapsed} day${p.days_elapsed === 1 ? "" : "s"}</div></div>`;
+  if (ins.biggest) {
+    cards += `<div class="card"><div class="label">Biggest purchase</div>
+      <div class="value">${fmt0(ins.biggest.amount)}</div>
+      <div class="sub">${esc(ins.biggest.merchant || "—")} · ${esc(ins.biggest.txn_date || "")}</div></div>`;
+  }
+  $("insightCards").innerHTML = cards;
+
+  renderPaceChart(ins);
+
+  // Top merchants — proportional bars, direct-labeled.
+  const tm = ins.top_merchants || [];
+  const maxSpend = Math.max(...tm.map(m => m.spend), 1);
+  $("topMerchants").innerHTML = tm.map(m => `
+    <div class="row" style="margin-bottom:9px;gap:10px;flex-wrap:nowrap;">
+      <div style="width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;" title="${esc(m.merchant)}">${esc(m.merchant)}</div>
+      <div class="bar"><div style="width:${Math.round(m.spend / maxSpend * 100)}%"></div></div>
+      <div class="mono" style="width:85px;text-align:right;font-size:12px;">${fmt0(m.spend)}</div>
+      <div class="muted" style="width:34px;font-size:11px;">×${m.count}</div>
+    </div>`).join("") || `<div class="muted" style="font-size:13px;">No spend this month.</div>`;
+
+  // Category movers vs previous month.
+  const movers = (ins.category_movers || []).filter(m => m.delta !== 0);
+  $("catMovers").innerHTML = movers.map(m => {
+    const up = m.delta > 0;
+    const chip = `<span class="mono" style="color:${up ? "#f7a3ad" : "var(--good)"};font-size:12px;">
+      ${up ? "▲ +" : "▼ −"}${fmt0(Math.abs(m.delta)).slice(1)}</span>`;
+    const note = m.previous === 0 ? `<span class="tag">new</span>`
+               : m.current === 0 ? `<span class="tag">gone</span>` : "";
+    return `<div class="row" style="justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;">
+      <span>${esc(m.category)} ${note}</span>
+      <span><span class="mono" style="font-size:12px;">${fmt0(m.current)}</span> &nbsp;${chip}</span>
+    </div>`;
+  }).join("") || `<div class="muted" style="font-size:13px;">No change vs last month.</div>`;
+
+  // Recurring payments.
+  $("recurringList").innerHTML = (ins.recurring || []).map(r => `
+    <div class="row" style="justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;">
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%;" title="${esc(r.merchant)}">${esc(r.merchant)}</span>
+      <span><span class="mono" style="font-size:12px;">${fmt0(r.amount)}/mo</span>
+        <span class="tag">${r.months_seen} mo</span>
+        ${r.active_this_month ? `<span class="tag refund">billed</span>`
+                              : `<span class="tag big">pending</span>`}</span>
+    </div>`).join("") || `<div class="muted" style="font-size:13px;">Nothing recurring detected yet
+      (needs the same merchant + amount in 3 different months).</div>`;
+
+  // Duplicate-alert suspects.
+  const dups = ins.duplicate_suspects || [];
+  const dupWarn = $("dupWarn");
+  if (dups.length) {
+    dupWarn.style.display = "block";
+    dupWarn.innerHTML = `<b>⚑ ${dups.length} possible duplicate${dups.length > 1 ? "s" : ""}</b> —
+      identical card + amount + day + merchant counted more than once. If a bank sent two
+      alerts for one swipe, flip the extra row's type to <b>transfer</b> below. ` +
+      dups.map(d => `<br>· ${esc(d.txn_date)} — ${esc(d.merchant || "?")} ${fmt0(d.amount)} ×${d.count}
+        ${d.last4 ? `(${esc(d.bank || "")} ••${esc(d.last4)})` : ""}`).join("");
+  } else {
+    dupWarn.style.display = "none";
+  }
+}
+
+// Two-series pace chart: this month (cyan, filled) vs previous month
+// (gray dashed benchmark). X axis = day of month, so months overlay.
+function renderPaceChart(ins) {
+  const dim = ins.projection.days_in_month;
+  const [py, pm] = ins.prev_month.split("-").map(Number);
+  const prevDim = new Date(py, pm, 0).getDate();
+  const cutoff = ins.projection.is_current ? ins.projection.days_elapsed : dim;
+
+  const series = (points, lastDay, stop) => {
+    const byDay = {};
+    (points || []).forEach(pt => byDay[pt.day] = pt.cum);
+    let last = 0;
+    return Array.from({length: Math.max(dim, prevDim)}, (_, i) => {
+      const d = i + 1;
+      if (d > lastDay || d > stop) return null;
+      if (byDay[d] != null) last = byDay[d];
+      return last;
+    });
+  };
+
+  const labels = Array.from({length: Math.max(dim, prevDim)}, (_, i) => i + 1);
+  const tctx = $("paceChart").getContext("2d");
+  const grad = tctx.createLinearGradient(0, 0, 0, 220);
+  grad.addColorStop(0, "rgba(34,211,238,.30)"); grad.addColorStop(1, "rgba(34,211,238,0)");
+  paceChart && paceChart.destroy();
+  paceChart = new Chart($("paceChart"), {
+    type: "line",
+    data: { labels, datasets: [
+      { label: "This month", data: series(ins.daily_cumulative.current, dim, cutoff),
+        borderColor: "#22D3EE", backgroundColor: grad, fill: true, tension: .3,
+        pointRadius: 0, pointHitRadius: 8, borderWidth: 2.5 },
+      { label: "Last month", data: series(ins.daily_cumulative.previous, prevDim, prevDim),
+        borderColor: "#94a3b8", borderDash: [6, 4], fill: false, tension: .3,
+        pointRadius: 0, pointHitRadius: 8, borderWidth: 1.8 },
+    ]},
+    options: {
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { position: "bottom", labels: {color: "#94a3b8", boxWidth: 14, padding: 10, font: {size: 11}} },
+        tooltip: { callbacks: { title: items => `Day ${items[0].label}`,
+                                label: c => `${c.dataset.label}: ${fmt0(c.parsed.y ?? 0)}` } },
+      },
+      scales: { x: { ticks: {color: "#94a3b8", font: {size: 10}, maxTicksLimit: 11}, grid: {display: false} },
+                y: { ticks: {color: "#94a3b8"}, grid: {color: "rgba(148,163,184,.10)"} } },
+    },
+  });
 }
 
 // ---- Transaction filters (client-side over the already-fetched txns) ----
@@ -269,10 +443,10 @@ function populateTxnFilters(summary, txns) {
   const accPrev = accSel.value, catPrev = catSel.value;
   const accounts = (summary.by_account || []).map(a => [a.last4, `${a.bank} ••${a.last4}`]);
   accSel.innerHTML = `<option value="">All accounts</option>` +
-    accounts.map(([v,l]) => `<option value="${v}">${l}</option>`).join("");
+    accounts.map(([v,l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
   const cats = [...new Set(txns.map(t => t.category).filter(Boolean))].sort();
   catSel.innerHTML = `<option value="">All categories</option>` +
-    cats.map(c => `<option value="${c}">${c}</option>`).join("");
+    cats.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
   accSel.value = accPrev; catSel.value = catPrev;   // preserve selection across reloads
 }
 
@@ -352,17 +526,17 @@ async function loadUnparsed() {
   $("unparsedCount").textContent = items.length;
   $("unparsedList").innerHTML = items.map(u => {
     const g = guessType(u);
-    const tag = `<span class="tag ${g.junk ? 'excluded' : 'refund'}">${g.label}</span>`;
+    const tag = `<span class="tag ${g.junk ? 'excluded' : 'refund'}">${esc(g.label)}</span>`;
     return `
-    <div id="unp-${u.source_email_id}" style="border-bottom:1px solid var(--border);padding:8px 0;font-size:13px;">
+    <div id="unp-${esc(u.source_email_id)}" style="border-bottom:1px solid var(--border);padding:8px 0;font-size:13px;">
       <div class="row" style="justify-content:space-between;align-items:flex-start;">
         <div style="flex:1;min-width:0;">
-          <div class="muted">${u.received_at||""} · ${(u.sender||"").replace(/</g,"&lt;")} ${tag}</div>
-          <div>${(u.subject||"").replace(/</g,"&lt;")}</div>
-          <div class="muted" style="font-size:12px;">${(u.snippet||"").slice(0,160).replace(/</g,"&lt;")}…</div>
+          <div class="muted">${esc(u.received_at||"")} · ${esc(u.sender||"")} ${tag}</div>
+          <div>${esc(u.subject||"")}</div>
+          <div class="muted" style="font-size:12px;">${esc((u.snippet||"").slice(0,160))}…</div>
         </div>
         <button class="ghost" style="font-size:12px;white-space:nowrap;"
-          onclick="retryLlm('${u.source_email_id}', this)">✨ Extract with AI</button>
+          onclick="retryLlm('${esc(u.source_email_id)}', this)">✨ Extract with AI</button>
       </div>
     </div>`;
   }).join("");
@@ -372,7 +546,7 @@ async function loadUnparsed() {
 async function retryLlm(emailId, btn) {
   btn.disabled = true; btn.textContent = "✨ Working…";
   try {
-    const r = await api(`/unparsed/${emailId}/retry-llm`, { method: "POST" });
+    const r = await api(`/unparsed/${encodeURIComponent(emailId)}/retry-llm`, { method: "POST" });
     await loadAiCost();
     if (r.status === "added") {
       // extracted -> refresh everything (row is gone from unparsed)
@@ -396,7 +570,7 @@ function renderCards(s) {
   const el = $("accountCards");
   let html = `<div class="card hero"><div class="label">Total Spend</div>
       <div class="value">${fmt(s.total_spend)}</div>
-      <div class="sub">${s.month}</div></div>`;
+      <div class="sub">${esc(s.month)}</div></div>`;
   if (s.refunds && s.refunds.count > 0) {
     html += `<div class="card"><div class="label">Refunds / paybacks</div>
       <div class="value" style="color:var(--good)">−${fmt(s.refunds.amount)}</div>
@@ -407,11 +581,16 @@ function renderCards(s) {
       <div class="value muted">${fmt(s.excluded_transfers.amount)}</div>
       <div class="sub">${s.excluded_transfers.count} txns not counted</div></div>`;
   }
+  if (s.unassigned && s.unassigned.count > 0) {
+    html += `<div class="card"><div class="label">⚠ No matching account</div>
+      <div class="value">${fmt(s.unassigned.amount)}</div>
+      <div class="sub">${s.unassigned.count} txn${s.unassigned.count>1?"s":""} — add that card's last4 to config.json</div></div>`;
+  }
   for (const a of s.by_account) {
     if (!a.spend) continue;
-    html += `<div class="card"><div class="label">${a.name}</div>
+    html += `<div class="card"><div class="label">${esc(a.name)}</div>
       <div class="value">${fmt(a.spend)}</div>
-      <div class="sub">${a.bank} ••${a.last4}</div></div>`;
+      <div class="sub">${esc(a.bank)} ••${esc(a.last4)}</div></div>`;
   }
   el.innerHTML = html;
 }
@@ -495,12 +674,12 @@ function renderTxns(txns) {
       : (t.txn_type==="refund" ? `<span class="tag refund">refund</span>` : "");
     const bigTag = big ? `<span class="tag big" title="Large transaction — review">⚑ big</span>` : "";
     return `<tr class="${big ? 'bigrow' : ''}">
-      <td>${t.txn_date||""}</td>
-      <td>${t.account_name||"—"}<br><span class="muted" style="font-size:11px">${t.bank||""} ${t.last4?'••'+t.last4:''}</span></td>
-      <td>${t.merchant_clean||t.merchant_raw||"—"} ${bigTag}</td>
+      <td>${esc(t.txn_date||"")}</td>
+      <td>${esc(t.account_name||"—")}<br><span class="muted" style="font-size:11px">${esc(t.bank||"")} ${t.last4?'••'+esc(t.last4):''}</span></td>
+      <td>${esc(t.merchant_clean||t.merchant_raw||"—")} ${bigTag}</td>
       <td>${excluded?'<span class="muted">—</span>':catSel}</td>
       <td>${typeSel} ${tag}</td>
-      <td style="text-align:right" class="amount ${t.direction}">
+      <td style="text-align:right" class="amount ${esc(t.direction)}">
         ${t.direction==='credit'?'+':''}${fmt(t.amount)}</td>
     </tr>`;
   }).join("");
@@ -545,9 +724,9 @@ function renderFeed(feed) {
   $("progressFeed").innerHTML = feed.slice().reverse().map(f => {
     const icon = f.ok ? '<span style="color:var(--good)">✓</span>'
                       : '<span class="muted">○</span>';
-    const detail = f.ok ? f.detail : `<span class="muted">${f.detail}</span>`;
+    const detail = f.ok ? esc(f.detail) : `<span class="muted">${esc(f.detail)}</span>`;
     return `<div style="padding:3px 0;border-bottom:1px solid var(--border);">
-      ${icon} ${(f.subject||"").replace(/</g,"&lt;")} — ${detail}</div>`;
+      ${icon} ${esc(f.subject||"")} — ${detail}</div>`;
   }).join("");
 }
 
@@ -577,7 +756,8 @@ function pollSync(opts = {}) {
       else if (st.result) {
         const r = st.result;
         if ("added" in r && "skipped_duplicates" in r)
-          txt.textContent = `Added ${r.added} (${r.by_llm} via AI) · ${r.unparsed} unparsed · ${r.skipped_duplicates} dupes skipped`;
+          txt.textContent = `Added ${r.added} (${r.by_llm} via AI) · ${r.unparsed} unparsed · ${r.skipped_duplicates} dupes skipped` +
+            (r.capped ? " · ⚠ hit the message cap — some older mail wasn't fetched" : "");
         else if ("still_unparsed" in r)
           txt.textContent = `${st.cancelled ? "Stopped — " : ""}Extracted ${r.added}, ${r.still_unparsed} not transactions`;
         else if ("categorized" in r)

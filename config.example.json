@@ -18,9 +18,12 @@
     [25000, "Rent", "monthly rent"]
   ],
 
+  "_rent_shift_day_comment": "Rent is often paid a few days early: a Rent txn dated on/after this day of the month COUNTS toward the NEXT month (its true date is kept). Set 32 to disable.",
+  "rent_shift_day": 25,
+
   "_income_rules_comment": "Incoming credits matching these are IGNORED (not counted as a deduction): salary sender, your own other-bank name for self-transfers, family. Everything else coming in is treated as a payback that reduces spend.",
   "income_rules": [
-    ["kotak", "self-transfer from my own other bank"],
+    ["your other bank name", "self-transfer from my own other bank"],
     ["family member name", "family support, not a reimbursement"]
   ]
 }

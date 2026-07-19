@@ -24,3 +24,7 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# SQLite WAL side files
+*.db-wal
+*.db-shm

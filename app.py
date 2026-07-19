@@ -2,21 +2,78 @@
 
 Run: uvicorn app:app --reload   then open http://127.0.0.1:8000
 """
+import re
 import threading
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import db
 import gmail_sync
+
+VALID_TXN_TYPES = {"purchase", "refund", "card_payment", "transfer"}
+_MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
+# ---------- local-only security guard ----------
+# This is a single-user app holding financial data, served without auth on
+# loopback. Two browser-borne attacks still reach loopback servers:
+#   1. DNS rebinding: attacker.com resolves to 127.0.0.1, the victim's browser
+#      happily reads our JSON — but sends Host: attacker.com. Rejecting foreign
+#      Host headers kills this.
+#   2. Cross-site request forgery: any webpage can fire a no-body POST at
+#      http://127.0.0.1:8000/... (triggering syncs / paid AI runs). Browsers
+#      attach an Origin header to cross-site POSTs — reject non-local origins.
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
+_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _hostname(host_header: str) -> str:
+    h = (host_header or "").strip().lower()
+    if h.startswith("["):                 # [::1]:8000
+        return h.split("]", 1)[0] + "]"
+    return h.split(":", 1)[0]
 
 BASE = Path(__file__).parent
 app = FastAPI(title="Monthly Expense Tracker")
 
 db.init_db()
+
+
+@app.middleware("http")
+async def local_only_guard(request, call_next):
+    if _hostname(request.headers.get("host", "")) not in _LOCAL_HOSTS:
+        return JSONResponse(status_code=421, content={"detail": "Local access only"})
+
+    if request.method in _UNSAFE_METHODS:
+        origin = request.headers.get("origin")
+        if origin:  # absent for curl/scripts; browsers always send it on POST
+            if (urlsplit(origin).hostname or "").lower() not in _LOCAL_HOSTS:
+                return JSONResponse(status_code=403,
+                                    content={"detail": "Cross-origin request blocked"})
+
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    # Defense-in-depth against injected markup: no external connections or
+    # images, no framing. Chart.js (jsdelivr) + Google Fonts stay allowed;
+    # 'unsafe-inline' is required by the dashboard's inline script/handlers.
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src https://fonts.gstatic.com; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "object-src 'none'; base-uri 'none'; form-action 'self'; "
+        "frame-ancestors 'none'",
+    )
+    return response
 
 # In-memory sync state for the progress bar. Single-user local app, so a module
 # global guarded by a lock is sufficient.
@@ -49,9 +106,10 @@ def _start_job(phase: str):
     return True
 
 
-def _run_sync(days: int):
+def _run_sync(days: int, max_messages: int):
     try:
-        result = gmail_sync.sync(newer_than_days=days, progress=_progress)
+        result = gmail_sync.sync(newer_than_days=days, max_messages=max_messages,
+                                 progress=_progress)
         with _sync_lock:
             _sync_state.update(running=False, result=result, phase="Done")
     except Exception as e:
@@ -61,7 +119,8 @@ def _run_sync(days: int):
 
 # ---------- models ----------
 class SyncRequest(BaseModel):
-    days: int = 90
+    days: int = Field(90, ge=1, le=3650)
+    max_messages: int = Field(2000, ge=1, le=20000)
 
 
 class TxnPatch(BaseModel):
@@ -91,7 +150,8 @@ class Budget(BaseModel):
 def run_sync(req: SyncRequest):
     if not _start_job("Starting…"):
         raise HTTPException(status_code=409, detail="A job is already in progress")
-    threading.Thread(target=_run_sync, args=(req.days,), daemon=True).start()
+    threading.Thread(target=_run_sync, args=(req.days, req.max_messages),
+                     daemon=True).start()
     return {"started": True}
 
 
@@ -131,17 +191,35 @@ def transactions(month: str | None = None,
 
 
 def _resolve_range(month, frm, to):
-    """Normalize query params into (start, end). `from`/`to` win over `month`."""
+    """Normalize query params into (start, end). `from`/`to` win over `month`.
+    Formats are validated because a malformed month (e.g. 2026-7) would silently
+    return an empty result instead of an error."""
     if frm and to:
-        return frm, to
-    if month:
-        return month, month
-    raise HTTPException(status_code=400, detail="Provide ?month= or ?from=&to=")
+        pair = (frm, to)
+    elif month:
+        pair = (month, month)
+    else:
+        raise HTTPException(status_code=400, detail="Provide ?month= or ?from=&to=")
+    for v in pair:
+        if not _MONTH_RE.match(v):
+            raise HTTPException(status_code=400,
+                                detail=f"Invalid month {v!r} — expected YYYY-MM")
+    return pair
 
 
 @app.patch("/transactions/{txn_id}")
 def patch_txn(txn_id: int, patch: TxnPatch):
-    db.update_txn(txn_id, category=patch.category, txn_type=patch.txn_type)
+    # An unknown txn_type would silently drop the row from EVERY total
+    # (spend counts purchase/refund; "excluded" counts card_payment/transfer).
+    if patch.txn_type is not None and patch.txn_type not in VALID_TXN_TYPES:
+        raise HTTPException(status_code=400,
+                            detail=f"txn_type must be one of {sorted(VALID_TXN_TYPES)}")
+    category = patch.category
+    if category is not None:
+        category = category.strip()
+        if not category or len(category) > 60:
+            raise HTTPException(status_code=400, detail="Invalid category")
+    db.update_txn(txn_id, category=category, txn_type=patch.txn_type)
     return {"ok": True}
 
 
@@ -153,6 +231,20 @@ def accounts():
 @app.get("/months")
 def months():
     return db.months_with_data()
+
+
+@app.get("/insights")
+def insights(month: str | None = None):
+    """Estimator + analysis for one month (defaults to the newest with data):
+    month-end projection, MoM movers, top merchants, recurring, duplicates."""
+    if month is None:
+        have = db.months_with_data()
+        month = have[0] if have else None
+    if month is None or not _MONTH_RE.match(month):
+        raise HTTPException(status_code=400,
+                            detail="Provide ?month=YYYY-MM (no data yet)" if month is None
+                            else f"Invalid month {month!r} — expected YYYY-MM")
+    return db.insights_for_month(month)
 
 
 @app.get("/ai-usage")

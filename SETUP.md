@@ -9,8 +9,8 @@ bank's transaction-alert emails.
 ## 1. Install
 
 ```bash
-git clone https://github.com/aryanrawat2001/<repo>.git
-cd <repo>
+git clone https://github.com/AryanRawat2001/monthly-expense-tracker.git
+cd monthly-expense-tracker
 python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
@@ -58,7 +58,11 @@ The app reads Gmail via Google's API using a free "Desktop app" OAuth credential
    - User type: **External** → Create.
    - Fill App name + your email for the support/developer fields.
    - On **Test users**, click **+ Add users** and add **your own Gmail address**.
-   - Leave publishing status as **Testing** (no Google review needed for personal use).
+   - You can leave publishing status as **Testing**, BUT Google then expires your
+     login every **7 days** (the app recovers by re-opening the consent tab). To log
+     in once and be done, click **Publish app** (→ In production) — no verification
+     is needed for your own personal use; the consent page just shows an
+     "unverified app" warning you click through.
 4. **APIs & Services → Credentials → Create Credentials → OAuth client ID**:
    - Application type: **Desktop app** → Create.
 5. **Download** the JSON and save it in the project folder as **`credentials.json`**.
@@ -116,6 +120,8 @@ Use Sonnet (default, cheap) or override: `AI_MODEL=opus uvicorn app:app`.
 
 - **403 access_denied on consent** → you didn't add your email under OAuth consent screen →
   **Test users**. Add it and retry.
+- **Sync fails with `invalid_grant` / re-asks for consent weekly** → your OAuth app is in
+  **Testing** mode (7-day token expiry). Publish it to Production (see step 3).
 - **"no account" on a transaction** → that card's `last4` isn't in `config.json`; add it.
 - **A transaction is mis-categorized or counted wrong** → fix its category/type inline in
   the table, or add a rule in `config.json`.

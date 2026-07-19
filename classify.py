@@ -44,6 +44,11 @@ _AMBIGUOUS_RAILS = {"bbps", "billdesk", "card payment", "credit card payment", "
 # NOT match inside "credit card" (the substring "cred" lives in "credit"!).
 _CRED_RE = re.compile(r"\bcred\b|@cred|cred\.club|yescred", re.IGNORECASE)
 
+# These transfer_rules patterns are fully handled by _CRED_RE above. They must
+# NOT reach the plain-substring matcher: "cred" would match inside "credited"/
+# "incredible" and silently exclude real purchases from spend.
+_CRED_FAMILY = {"cred", "@cred", "yescred"}
+
 
 def _matches_transfer(narration: str, patterns) -> bool:
     """True if the narration indicates a card-bill payment / self-transfer.
@@ -72,7 +77,8 @@ def finalize_txn_type(txn: dict, account: dict | None) -> str:
     # only ever mean a card-bill payment).
     narration = snippet
 
-    transfer_patterns = [r["pattern"] for r in get_transfer_rules()]
+    transfer_patterns = [r["pattern"] for r in get_transfer_rules()
+                         if r["pattern"].lower() not in _CRED_FAMILY]
     acct_type = account.get("type") if account else None
 
     # A parser-detected refund is authoritative — never reclassify it as a
@@ -94,8 +100,9 @@ def finalize_txn_type(txn: dict, account: dict | None) -> str:
 
         # 1b. Payee that explicitly names a bank's "credit card" account is
         #     unambiguously a card-bill payment (e.g. "ICICI BANK CREDIT CARD").
-        #     "credit ca" (not "car") because alerts often truncate "CARD"->"CA".
-        elif re.search(r"credit\s*ca", mlow):
+        #     "credit ca" (not "card") because alerts often truncate "CARD"->"CA";
+        #     \b so "accredited"-style words can't trigger it.
+        elif re.search(r"\bcredit\s*ca", mlow):
             return "card_payment"
 
         # 2. Card-bill / transfer markers. User-added transfer_rules are explicit,

@@ -39,7 +39,12 @@ def _run_claude(prompt: str, timeout: int = 60):
         return None
     try:
         proc = subprocess.run(
-            ["claude", "-p", prompt, "--model", AI_MODEL, "--output-format", "json"],
+            ["claude", "-p", prompt, "--model", AI_MODEL, "--output-format", "json",
+             # Email bodies are UNTRUSTED input. A prompt-injected email must not
+             # be able to make the CLI read files, hit the network, or run
+             # commands — so no tools, no MCP servers, and no session transcript
+             # of the email content left on disk.
+             "--tools", "", "--strict-mcp-config", "--no-session-persistence"],
             capture_output=True, text=True, timeout=timeout,
         )
     except (subprocess.TimeoutExpired, OSError):
@@ -170,8 +175,12 @@ def classify_with_llm(subject: str, text: str, force: bool = False) -> ParsedTxn
 
 def _verify_amount(value, email_text: str) -> float | None:
     """The returned amount must (a) parse to a positive, sane float, AND
-    (b) actually appear in the email text. This kills the most common
-    hallucination — fabricating or mis-picking a figure."""
+    (b) actually appear in the email text AS A WHOLE NUMBER TOKEN. This kills
+    the most common hallucination — fabricating or mis-picking a figure.
+
+    Boundary-aware on purpose: a plain substring check would accept 58712
+    because "58,712" is a slice of the credit limit "2,58,712.00", or accept
+    25 because "255" contains "25". Digit-run boundaries reject both."""
     try:
         amount = float(value)
     except (TypeError, ValueError):
@@ -179,20 +188,29 @@ def _verify_amount(value, email_text: str) -> float | None:
     if amount <= 0 or amount > _MAX_REASONABLE_AMOUNT:
         return None
 
-    # The amount must be present in the email (allowing comma grouping and
-    # optional 2-dp), so the model can't invent a number that isn't there.
     int_part = int(amount)
-    grouped_in = _indian_group(int_part)
-    plain_in = str(int_part)
+    grouped = _indian_group(int_part)
+    plain = str(int_part)
     cents = round(amount - int_part, 2)
-    # Build candidate string fragments to look for.
-    candidates = {plain_in, grouped_in}
     if cents:
-        dec = f"{amount:.2f}"
-        candidates.add(dec)
-        candidates.add(_indian_group(int_part) + dec[dec.find("."):])
-    norm = email_text.replace(" ", "")
-    return amount if any(c.replace(" ", "") in norm for c in candidates) else None
+        dec2 = f"{amount:.2f}"                       # 1234.50
+        frac2 = dec2[dec2.find("."):]
+        candidates = {dec2, grouped + frac2}
+        if round(cents * 10, 6) == round(cents * 10):  # one-dp like .5 -> also try 1234.5
+            dec1 = f"{amount:.1f}"
+            candidates |= {dec1, grouped + dec1[dec1.find("."):]}
+    else:
+        # Whole rupees: emails write either "730" or "730.00".
+        candidates = {plain, grouped, plain + ".00", grouped + ".00"}
+
+    norm = email_text.replace(" ", "").replace("\xa0", "")
+    for c in candidates:
+        # Not preceded by a digit or by digit+separator (rejects slices of a
+        # longer grouped number); not followed by a digit or more decimals.
+        pat = r"(?<!\d)(?<!\d[.,])" + re.escape(c) + r"(?!\d)(?!\.\d)"
+        if re.search(pat, norm):
+            return amount
+    return None
 
 
 def _looks_like_credit_limit(amount: float, email_text: str) -> bool:

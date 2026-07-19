@@ -28,15 +28,23 @@ double-counted**.
 - **Dashboard:** category donut, per-account stacked bar, monthly trend, single-month or
   date-range views, and a filterable transactions table (account / category / type / amount /
   date / ⚑ big-amount flag).
+- **Insights & month-end estimator:** projected month-end spend (run-rate + a "typical
+  month" median reference + recurring bills not yet billed), day-by-day spend pace vs last
+  month, month-over-month category movers, top merchants, **recurring-payment detection**
+  (same merchant + amount across 3+ months) and **duplicate-alert detection**.
 - **Cost counter** for any AI usage; **Stop** button + live feed for bulk AI jobs.
+- **Local-only hardening:** rejects foreign `Host` headers (DNS-rebinding) and cross-origin
+  POSTs (CSRF), sets a strict CSP, escapes all email-derived text (stored-XSS), and runs the
+  AI fallback with **all tools disabled** so a malicious email can't prompt-inject its way
+  to your files or network.
 
 ---
 
 ## Quick start
 
 ```bash
-git clone https://github.com/aryanrawat2001/<repo>.git
-cd <repo>
+git clone https://github.com/AryanRawat2001/monthly-expense-tracker.git
+cd monthly-expense-tracker
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
@@ -76,6 +84,28 @@ You can fix any row's **category** or **type** from the dashboard, and edit the 
 - For alerts the built-in parsers can't read, an **opt-in** AI pass calls your local
   `claude` CLI (no API key) on just that one email; every value it returns is verified
   against the email before use. Turn it off entirely with `LLM_FALLBACK=0 uvicorn app:app`.
+- The CLI is invoked with `--tools "" --strict-mcp-config --no-session-persistence`:
+  the model sees only the one email, can't touch files/network/commands, and no session
+  transcript of your email is written to disk.
+- Works with a **Claude subscription login** (SSO) or an API key — whatever your `claude`
+  CLI is signed into. On a subscription the dashboard's 🤖 counter shows the *API-equivalent*
+  estimate (calls are covered by the plan). Heavy bulk extraction can hit your plan's usage
+  window; failed calls simply leave emails in the unparsed panel to retry later.
+
+---
+
+## Tests
+
+The money math is locked by a test suite (parsers for every real email format, the
+no-double-count classifier, the AI output verifier, DB summaries, API + security middleware):
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests/
+```
+
+Tests run against throwaway databases (`EXPENSES_DB` / `EXPENSES_CONFIG` env overrides) —
+they never touch your real `expenses.db` or `config.json`.
 
 ---
 

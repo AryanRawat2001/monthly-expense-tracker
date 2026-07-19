@@ -11,6 +11,26 @@ from .base import ParsedTxn, html_to_text, parse_amount, parse_date, clean_merch
 def parse(subject: str, body: str) -> ParsedTxn | None:
     text = html_to_text(body)
 
+    # ---- Card-bill payment received (seen from Jul 2026) — EXCLUDED from spend ----
+    #   "We have received payment of INR 724 on your ICICI Bank Credit Card
+    #    account 1234 XXXX XXXX 5678 on 15-JUL-26 through Click to Pay."
+    #   The card number is masked in the middle; the REAL last4 is the final group.
+    m = re.search(
+        r"received payment of\s+(INR\s*[\d,]+(?:\.\d{1,2})?)\s+on your ICICI Bank "
+        r"Credit Card account\s+([0-9X\s]+?)\s+on\s+(\d{1,2}-[A-Za-z]{3}-\d{2,4})",
+        text, re.IGNORECASE,
+    )
+    if m:
+        digit_groups = re.findall(r"\d{4}", m.group(2))
+        return ParsedTxn(
+            amount=parse_amount(m.group(1)),
+            direction="credit",
+            last4=digit_groups[-1] if digit_groups else None,
+            merchant_raw="ICICI CREDIT CARD BILL PAYMENT",
+            txn_date=parse_date(m.group(3)),
+            txn_type="card_payment",
+        )
+
     m = re.search(
         r"Credit Card\s+XX?(\d{4})\s+has been used for a transaction of\s+(INR\s*[\d,]+(?:\.\d{1,2})?)\s+on\s+([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})",
         text, re.IGNORECASE,

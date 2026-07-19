@@ -8,11 +8,11 @@ Flow per message:
 OAuth: uses credentials.json (Desktop client) and caches token.json. Scope is
 read-only (gmail.readonly) — this app never modifies your mailbox.
 """
-import os
 import base64
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -46,18 +46,29 @@ ALERT_SENDERS = [
 def _get_service():
     creds = None
     if TOKEN_FILE.exists():
-        creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
+        try:
+            creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
+        except ValueError:
+            creds = None                       # corrupt/old-format token file
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except RefreshError:
+                # Routine, not fatal: a Testing-mode OAuth app's refresh token
+                # dies after 7 days (and tokens can be revoked). Fall through to
+                # a fresh consent flow instead of failing the sync.
+                creds = None
+        if not creds or not creds.valid:
             if not CRED_FILE.exists():
                 raise FileNotFoundError(
                     "credentials.json not found. See README for the Google OAuth setup."
                 )
             flow = InstalledAppFlow.from_client_secrets_file(str(CRED_FILE), SCOPES)
+            # Opens a browser tab for Google consent and waits for approval.
             creds = flow.run_local_server(port=0)
         TOKEN_FILE.write_text(creds.to_json())
+        TOKEN_FILE.chmod(0o600)   # OAuth token grants mailbox read access — owner-only
     return build("gmail", "v1", credentials=creds)
 
 
@@ -102,7 +113,7 @@ def _query(newer_than_days: int) -> str:
     return f"({senders}) newer_than:{newer_than_days}d"
 
 
-def sync(newer_than_days: int = 90, max_messages: int = 500, progress=None) -> dict:
+def sync(newer_than_days: int = 90, max_messages: int = 2000, progress=None) -> dict:
     """Fetch and ingest alerts. Returns counts. Safe to re-run (dedupes).
 
     progress: optional callable(done:int, total:int, phase:str) for the UI bar.
@@ -152,6 +163,9 @@ def sync(newer_than_days: int = 90, max_messages: int = 500, progress=None) -> d
         subject = _header(headers, "Subject")
         received_at = _received_iso(msg)
         if parsers.is_ignored(sender, subject):
+            # Remember it (hidden, pre-reviewed) so the next sync skips it
+            # before fetching instead of re-downloading it forever.
+            db.log_unparsed(msg["id"], sender, subject, "", received_at, reviewed=True)
             return
         body = _extract_body(payload)
         result = _ingest_one(msg["id"], sender, subject, body, received_at)
@@ -175,6 +189,9 @@ def sync(newer_than_days: int = 90, max_messages: int = 500, progress=None) -> d
     return {
         "added": added, "by_llm": by_llm, "unparsed": unparsed,
         "skipped_duplicates": skipped_dupes, "processed": total,
+        # True when the id listing hit max_messages — older mail in the window
+        # was NOT fetched; the user should raise the cap for deep syncs.
+        "capped": total >= max_messages,
     }
 
 
@@ -209,7 +226,7 @@ def retry_all_unparsed(progress=None, cancel=None) -> dict:
         if progress:
             progress(done, total, phase, item)
 
-    items = db.get_unparsed()
+    items = db.get_unparsed(limit=1000)
     total = len(items)
     added = still = 0
     report(0, total, "Extracting with AI…")
@@ -277,10 +294,12 @@ def categorize_unparsed_with_llm(progress=None, save_rules=True) -> dict:
         cat = mapping.get(m)
         if cat:
             updated += db.apply_category_to_merchant(m, cat)
-            if save_rules and m.lower() not in existing:
-                # Save the exact merchant string as a rule (high priority) so it
-                # sticks next time. Substring match means it also catches variants.
-                db.add_category_rule(m, cat, 15)
+            # Save the exact merchant string as a rule (high priority) so it
+            # sticks next time. Substring match means it also catches variants —
+            # which is why very short strings are NOT saved (a 2-3 char rule
+            # would match inside unrelated merchant names forever).
+            if save_rules and len(m.strip()) >= 4 and m.lower() not in existing:
+                db.add_category_rule(m.strip(), cat, 15)
                 rules_added += 1
         report(i, total, "Categorizing…")
 
@@ -319,6 +338,17 @@ def _ingest_one(email_id, sender, subject, body, received_at, use_llm=False) -> 
     # email's received date; if neither exists, treat as unparsed rather than
     # inserting a date-less row.
     txn_date = parsed.txn_date or (received_at[:10] if received_at else None)
+    # An LLM-extracted date can't be verified against the email the way the
+    # amount is. If it lands far from the email's own timestamp it would move
+    # spend across months — trust the email date instead.
+    if parsed_by == "llm" and parsed.txn_date and received_at:
+        try:
+            drift = abs((date.fromisoformat(received_at[:10])
+                         - date.fromisoformat(parsed.txn_date)).days)
+            if drift > 40:
+                txn_date = received_at[:10]
+        except ValueError:
+            txn_date = received_at[:10]
     if not txn_date:
         db.log_unparsed(email_id, sender, subject,
                         html_to_text(body)[:500], received_at)

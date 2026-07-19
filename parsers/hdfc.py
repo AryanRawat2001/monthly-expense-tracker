@@ -54,6 +54,37 @@ def parse(subject: str, body: str) -> ParsedTxn | None:
             txn_date=parse_date(m.group(4)), txn_type="purchase",
         )
 
+    # ---- Card spend, "We noticed a transaction" wording (seen from Jul 2026) ----
+    #   "Thank you for using your HDFC Bank Credit Card ending in 4242 .You made
+    #    a transaction of Rs. 295.00 at RAZ*MERCHANT on 11-07-2026 20:07:07 ."
+    m = re.search(
+        rf"Credit Card ending in\s*(\d{{4}})\s*\.?\s*You made a transaction of\s+({_AMT})\s+at\s+(.+?)\s+on\s+(\d{{1,2}}-\d{{1,2}}-\d{{4}})",
+        text, re.IGNORECASE,
+    )
+    if m:
+        return ParsedTxn(
+            amount=parse_amount(m.group(2)), direction="debit", last4=m.group(1),
+            merchant_raw=clean_merchant(m.group(3)),
+            txn_date=parse_date(m.group(4)), txn_type="purchase",
+        )
+
+    # ---- RuPay-card UPI, newer table wording (seen from Jun 2026) ----
+    #   "Rs.191.00 has been debited from your RuPay Credit Card 1729 Paid to
+    #    q9000...@okbank Date: 16-06-26 UPI Transaction Reference Number: ..."
+    #   (no "ending", no payee name — just the bare VPA handle)
+    m = re.search(
+        rf"({_AMT})\s+has been debited from your (?:\w+\s+){{0,3}}Credit Card\s*(\d{{4}})\s+Paid to\s+(\S+)",
+        text, re.IGNORECASE,
+    )
+    if m:
+        date_m = re.search(rf"Date:\s*({_DMY})", text, re.IGNORECASE)
+        return ParsedTxn(
+            amount=parse_amount(m.group(1)), direction="debit", last4=m.group(2),
+            merchant_raw=clean_merchant(m.group(3)),
+            txn_date=parse_date(date_m.group(1)) if date_m else None,
+            txn_type="purchase",
+        )
+
     # ---- NetBanking payment from account to a payee (often a credit-card bill) ----
     #   "...NetBanking for payment of Rs. 654.00 from A/c ****XXXX to <BANK> CREDIT CA..."
     m = re.search(
