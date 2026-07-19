@@ -117,6 +117,37 @@
   .notice { position:relative; background:rgba(20,20,42,.5); border:1px solid var(--border);
     border-radius:14px; padding:13px 18px; font-size:13px; color:var(--muted); margin-bottom:22px; }
   .notice b { color:var(--text); }
+
+  .table-scroll { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  .tm-label { width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12.5px; }
+  .tm-amt { width:85px; text-align:right; font-size:12px; }
+  .tm-count { width:34px; font-size:11px; }
+
+  /* ---------- mobile ---------- */
+  @media (max-width: 760px) {
+    header { padding:10px 12px; gap:8px; position:static; }
+    h1 { font-size:16px; flex-basis:100%; }
+    .logo-dot { width:24px; height:24px; font-size:12px; border-radius:7px; }
+    header select, header button, header input[type=month] { font-size:12px; padding:7px 9px; }
+    #aiCost, #status { display:none !important; }
+    main { padding:14px 10px; }
+    .grid { gap:10px; }
+    .cards { grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); }
+    .card { padding:12px 14px; }
+    .card .value { font-size:19px; }
+    .card .sub { font-size:11px; }
+    .charts { grid-template-columns:1fr; }
+    .chart-box { padding:14px 12px; }
+    .chart-box h3 { font-size:14px; flex-wrap:wrap; }
+    .section-title { font-size:16px; margin:20px 0 10px; }
+    th, td { padding:8px; font-size:12.5px; }
+    .table-scroll table { min-width:660px; }  /* scroll, don't crush */
+    #txnFilters input, #txnFilters select { font-size:12px; padding:7px 8px; }
+    #fSearch { min-width:110px; }
+    .tm-label { width:96px; font-size:11.5px; }
+    .tm-amt { width:72px; font-size:11.5px; }
+    .notice { padding:10px 12px; font-size:12px; }
+  }
 </style>
 </head>
 <body>
@@ -226,6 +257,7 @@
       <button class="ghost" id="fClear" style="font-size:12px;">Clear</button>
     </div>
     <div id="txnCount" class="muted" style="font-size:12px;margin-bottom:8px;"></div>
+    <div class="table-scroll">
     <table>
       <thead><tr>
         <th>Date</th><th>Account</th><th>Merchant</th><th>Category</th>
@@ -233,6 +265,7 @@
       </tr></thead>
       <tbody id="txnBody"></tbody>
     </table>
+    </div>
   </div>
 </main>
 
@@ -340,10 +373,10 @@ function renderInsights(ins) {
   const maxSpend = Math.max(...tm.map(m => m.spend), 1);
   $("topMerchants").innerHTML = tm.map(m => `
     <div class="row" style="margin-bottom:9px;gap:10px;flex-wrap:nowrap;">
-      <div style="width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;" title="${esc(m.merchant)}">${esc(m.merchant)}</div>
+      <div class="tm-label" title="${esc(m.merchant)}">${esc(m.merchant)}</div>
       <div class="bar"><div style="width:${Math.round(m.spend / maxSpend * 100)}%"></div></div>
-      <div class="mono" style="width:85px;text-align:right;font-size:12px;">${fmt0(m.spend)}</div>
-      <div class="muted" style="width:34px;font-size:11px;">×${m.count}</div>
+      <div class="mono tm-amt">${fmt0(m.spend)}</div>
+      <div class="muted tm-count">×${m.count}</div>
     </div>`).join("") || `<div class="muted" style="font-size:13px;">No spend this month.</div>`;
 
   // Category movers vs previous month.
@@ -606,15 +639,16 @@ function renderCharts(s) {
   const colorOf = {};
   cats.forEach((c, i) => { colorOf[c.category] = palette[i % palette.length]; });
 
-  // category donut
+  // category donut (legend moves below the chart on narrow screens)
+  const narrow = window.matchMedia("(max-width: 760px)").matches;
   catChart && catChart.destroy();
   catChart = new Chart($("catChart"), {
     type:"doughnut",
     data:{ labels:cats.map(c=>c.category),
       datasets:[{ data:cats.map(c=>c.spend), backgroundColor:cats.map(c=>colorOf[c.category]),
         borderColor:"#0d0d1a", borderWidth:2, hoverOffset:6 }]},
-    options:{ cutout:"62%", plugins:{ legend:{ position:"right",
-      labels:{color:"#e2e8f0",boxWidth:12,padding:10,font:{size:12}}}}}
+    options:{ cutout:"62%", plugins:{ legend:{ position: narrow ? "bottom" : "right",
+      labels:{color:"#e2e8f0",boxWidth:12,padding:10,font:{size:narrow ? 11 : 12}}}}}
   });
 
   // per-account STACKED bar: each account split into its category segments.
