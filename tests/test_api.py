@@ -174,6 +174,13 @@ def test_foreign_host_header_rejected(client):
     assert r.status_code == 421
 
 
+def test_extra_host_allowed_via_env(client, monkeypatch):
+    """Tunnel/Tailscale hostnames are opt-in through EXPENSES_ALLOWED_HOSTS."""
+    monkeypatch.setenv("EXPENSES_ALLOWED_HOSTS", "myapp.trycloudflare.com")
+    assert client.get("/months", headers={"host": "myapp.trycloudflare.com"}).status_code == 200
+    assert client.get("/months", headers={"host": "attacker.com"}).status_code == 421
+
+
 def test_cross_origin_post_rejected(client):
     r = client.post("/sync/stop", headers={"Origin": "https://evil.example"})
     assert r.status_code == 403

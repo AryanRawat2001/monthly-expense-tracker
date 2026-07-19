@@ -2,6 +2,7 @@
 
 Run: uvicorn app:app --reload   then open http://127.0.0.1:8000
 """
+import os
 import re
 import threading
 from pathlib import Path
@@ -31,6 +32,14 @@ _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
+def _allowed_hosts() -> set[str]:
+    """Loopback names, plus any hostnames the user EXPLICITLY allowed via
+    EXPENSES_ALLOWED_HOSTS (comma-separated) — e.g. a tunnel/Tailscale name.
+    Read per-request so it's testable and can't be baked in accidentally."""
+    extra = os.environ.get("EXPENSES_ALLOWED_HOSTS", "")
+    return _LOCAL_HOSTS | {h.strip().lower() for h in extra.split(",") if h.strip()}
+
+
 def _hostname(host_header: str) -> str:
     h = (host_header or "").strip().lower()
     if h.startswith("["):                 # [::1]:8000
@@ -45,13 +54,14 @@ db.init_db()
 
 @app.middleware("http")
 async def local_only_guard(request, call_next):
-    if _hostname(request.headers.get("host", "")) not in _LOCAL_HOSTS:
+    allowed = _allowed_hosts()
+    if _hostname(request.headers.get("host", "")) not in allowed:
         return JSONResponse(status_code=421, content={"detail": "Local access only"})
 
     if request.method in _UNSAFE_METHODS:
         origin = request.headers.get("origin")
         if origin:  # absent for curl/scripts; browsers always send it on POST
-            if (urlsplit(origin).hostname or "").lower() not in _LOCAL_HOSTS:
+            if (urlsplit(origin).hostname or "").lower() not in allowed:
                 return JSONResponse(status_code=403,
                                     content={"detail": "Cross-origin request blocked"})
 

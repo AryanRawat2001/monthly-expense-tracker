@@ -320,7 +320,9 @@ slices sum to total, Insights section renders for a single month.
 - **Middleware** (`app.py:local_only_guard`): rejects requests whose `Host` isn't loopback
   (DNS-rebinding steals data through the victim's own browser otherwise) and unsafe-method
   requests with a non-local `Origin` (CSRF could trigger paid AI runs / deletes). Also sets
-  CSP (`connect-src 'self'` blocks exfil), nosniff, DENY framing.
+  CSP (`connect-src 'self'` blocks exfil), nosniff, DENY framing. Extra hostnames (a
+  tunnel / Tailscale name) are opt-in via `EXPENSES_ALLOWED_HOSTS=host1,host2` — remember
+  there is NO login, so anyone reaching an allowed host sees all data.
 - **Stored XSS**: merchant names/subjects/snippets come from emails; entity-encoded markup
   survives `html_to_text` as live `<` chars. The dashboard escapes ALL email-derived strings
   via `esc()` before innerHTML. Never interpolate a txn/unparsed field without it.
